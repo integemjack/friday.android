@@ -1,0 +1,101 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 串行发版：两个 run 并发 bump 会互相踩 tag
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.VERSION }}
+      version-code: ${{ steps.bump.outputs.VERSION_CODE }}
+      released: ${{ steps.bump.outputs.RELEASE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 全历史 + tags：bump 判断要最新 v* tag
+      - name: Compute next version
+        id: bump
+        shell: bash
+        run: bash tools/bump-version.sh
+      - name: Show decision
+        run: echo "→ v${{ steps.bump.outputs.VERSION }}（code ${{ steps.bump.outputs.VERSION_CODE }}）: ${{ steps.bump.outputs.REASON }}"
+      - name: Commit version bump
+        if: steps.bump.outputs.NEEDS_COMMIT == '1'
+        run: |
+          git config user.name "friday-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git add app/build.gradle.kts
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.VERSION }} [skip ci]"
+          git push origin HEAD:main
+      - name: Tag
+        if: steps.bump.outputs.RELEASE == '1'
+        run: |
+          git tag "v${{ steps.bump.outputs.VERSION }}"
+          git push origin "v${{ steps.bump.outputs.VERSION }}"
+
+  build-release:
+    needs: bump-version
+    if: needs.bump-version.outputs.released == '1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "v${{ needs.bump-version.outputs.version }}"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.FRIDAY_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+      - name: Build release APK
+        env:
+          FRIDAY_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          FRIDAY_KEYSTORE_PASSWORD: ${{ secrets.FRIDAY_KEYSTORE_PASSWORD }}
+          FRIDAY_KEY_ALIAS: ${{ secrets.FRIDAY_KEY_ALIAS }}
+          FRIDAY_KEY_PASSWORD: ${{ secrets.FRIDAY_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+      - name: Verify APK version matches tag
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(ls -1 "$ANDROID_HOME"/build-tools/*/aapt | sort -V | tail -1)"
+          BADGING="$("$AAPT" dump badging "$APK" | head -2)"
+          echo "$BADGING"
+          echo "$BADGING" | grep -q "versionName='${{ needs.bump-version.outputs.version }}'" \
+            || { echo "::error::APK versionName 与 tag 不一致"; exit 1; }
+          echo "$BADGING" | grep -q "versionCode='${{ needs.bump-version.outputs.version-code }}'" \
+            || { echo "::error::APK versionCode 与预期不一致"; exit 1; }
+          cp "$APK" "friday-android-v${{ needs.bump-version.outputs.version }}.apk"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ needs.bump-version.outputs.version }}" \
+            "friday-android-v${{ needs.bump-version.outputs.version }}.apk" \
+            --title "Friday Android v${{ needs.bump-version.outputs.version }}" \
+            --notes "推 main 自动构建发布（版本自动叠加）。
+
+          - 版本 v${{ needs.bump-version.outputs.version }}（versionCode ${{ needs.bump-version.outputs.version-code }}）
+          - 下载下方 friday-android-v${{ needs.bump-version.outputs.version }}.apk 安装；已装旧版本的应用内会自动提示更新" \
+            --latest
+      - name: Upload APK artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: friday-android-v${{ needs.bump-version.outputs.version }}
+          path: friday-android-v${{ needs.bump-version.outputs.version }}.apk
+          retention-days: 14
