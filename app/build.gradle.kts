@@ -7,8 +7,8 @@ plugins {
 
 // 版本号由 CI 的 tools/bump-version.sh 自动叠加（推 main → 基于 v* tag 判断 patch+1）。
 // 手动升版本：直接改这里（versionName 领先最新 tag 时 CI 直接按它发版），记得 versionCode 也 +1。
-val APP_VERSION_NAME = "1.0.0"
-val APP_VERSION_CODE = 1
+val APP_VERSION_NAME = "1.0.1"
+val APP_VERSION_CODE = 2
 
 // 签名：CI 从 GitHub Secrets 注入；本地没配环境变量时 release 用 debug 签名（可安装，便于验证）。
 // 注意不能用同名属性：SigningConfig 里有 keyAlias / keyPassword，会遮蔽外层 val 导致自赋值。
