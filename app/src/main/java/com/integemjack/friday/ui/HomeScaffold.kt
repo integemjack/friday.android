@@ -5,8 +5,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -40,7 +40,7 @@ fun HomeScaffold(
                 NavigationBarItem(
                     selected = tab == 0,
                     onClick = { onTab(0) },
-                    icon = { Icon(Icons.Filled.Chat, contentDescription = null) },
+                    icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
                     label = { Text("会话") },
                 )
                 NavigationBarItem(
