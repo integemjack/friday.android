@@ -29,7 +29,8 @@ jobs:
         shell: bash
         run: bash tools/bump-version.sh
       - name: Show decision
-        run: echo "→ v${{ steps.bump.outputs.VERSION }}（code ${{ steps.bump.outputs.VERSION_CODE }}）: ${{ steps.bump.outputs.REASON }}"
+        run: |
+          echo "next version: v${{ steps.bump.outputs.VERSION }} (code ${{ steps.bump.outputs.VERSION_CODE }}) - ${{ steps.bump.outputs.REASON }}"
       - name: Commit version bump
         if: steps.bump.outputs.NEEDS_COMMIT == '1'
         run: |
