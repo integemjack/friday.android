@@ -1,6 +1,7 @@
 package com.integemjack.friday.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,9 +17,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -46,24 +51,48 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /** 会话列表（或未连接时的连接表单） */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun SessionsScreen(onOpen: () -> Unit) {
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
     var newError by remember { mutableStateOf<String?>(null) }
+    var menuSummary by remember { mutableStateOf<ConversationSummary?>(null) }
+    var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
+    var deleting by remember { mutableStateOf<ConversationSummary?>(null) }
 
     Box(Modifier.fillMaxSize()) {
         when (val conn = state.conn) {
             is ConnState.Connected -> {
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(state.summaries, key = { it.id }) { s ->
-                        SummaryRow(s, generating = state.runner?.isGenerating(s.id) == true) {
-                            scope.launch {
-                                runCatching { model.client.subscribeConversation(s.id) }
-                                    .onSuccess { onOpen() }
-                                    .onFailure { newError = it.message }
-                            }
+                        Box {
+                            SummaryRow(
+                                s,
+                                generating = state.runner?.isGenerating(s.id) == true,
+                                onClick = {
+                                    scope.launch {
+                                        runCatching { model.client.subscribeConversation(s.id) }
+                                            .onSuccess { onOpen() }
+                                            .onFailure { newError = it.message }
+                                    }
+                                },
+                                onLongPress = { menuSummary = s },
+                            )
+                            SummaryMenu(
+                                summary = menuSummary,
+                                anchor = s.id,
+                                onDismiss = { menuSummary = null },
+                                onRename = { renaming = it },
+                                onDelete = { deleting = it },
+                                onTogglePin = { summary ->
+                                    scope.launch {
+                                        runCatching { model.client.setPinned(summary.id, !summary.pinned) }
+                                            .onFailure { newError = it.message }
+                                    }
+                                },
+                            )
                         }
                     }
                     item { Spacer(Modifier.height(88.dp)) }
@@ -100,11 +129,101 @@ fun SessionsScreen(onOpen: () -> Unit) {
     newError?.let { err ->
         AlertDialog(
             onDismissRequest = { newError = null },
-            title = { Text("打开会话失败") },
+            title = { Text("操作失败") },
             text = { Text(err) },
             confirmButton = { TextButton(onClick = { newError = null }) { Text("好") } },
         )
     }
+
+    renaming?.let { summary ->
+        RenameDialog(
+            initial = summary.title,
+            onDismiss = { renaming = null },
+            onConfirm = { title ->
+                renaming = null
+                scope.launch {
+                    runCatching { model.client.renameConversation(summary.id, title) }
+                        .onFailure { newError = it.message }
+                }
+            },
+        )
+    }
+
+    deleting?.let { summary ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("删掉这段会话？") },
+            text = { Text("「${summary.title.ifBlank { "无标题" }}」会被删掉，它的媒体文件也一起删。远程那边正在跑的任务会被停下。删了不能恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleting = null
+                    scope.launch {
+                        runCatching { model.client.removeConversation(summary.id) }
+                            .onFailure { newError = it.message }
+                    }
+                }) { Text("删掉", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("算了") } },
+        )
+    }
+}
+
+/** 长按会话弹出的菜单（挂在对应那一行的 Box 里） */
+@Composable
+private fun SummaryMenu(
+    summary: ConversationSummary?,
+    anchor: String,
+    onDismiss: () -> Unit,
+    onRename: (ConversationSummary) -> Unit,
+    onDelete: (ConversationSummary) -> Unit,
+    onTogglePin: (ConversationSummary) -> Unit,
+) {
+    if (summary == null || summary.id != anchor) return
+    var expanded by remember(summary.id) { mutableStateOf(true) }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false; onDismiss() }) {
+        DropdownMenuItem(
+            text = { Text(if (summary.pinned) "取消置顶" else "置顶") },
+            leadingIcon = { Icon(Icons.Filled.PushPin, contentDescription = null) },
+            onClick = { expanded = false; onDismiss(); onTogglePin(summary) },
+        )
+        DropdownMenuItem(
+            text = { Text("重命名") },
+            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+            onClick = { expanded = false; onDismiss(); onRename(summary) },
+        )
+        DropdownMenuItem(
+            text = { Text("删掉", color = MaterialTheme.colorScheme.error) },
+            leadingIcon = {
+                Icon(Icons.Filled.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            },
+            onClick = { expanded = false; onDismiss(); onDelete(summary) },
+        )
+    }
+}
+
+@Composable
+private fun RenameDialog(initial: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var title by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("重命名会话") },
+        text = {
+            OutlinedTextField(
+                value = title,
+                onValueChange = { title = it },
+                label = { Text("标题") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(
+                enabled = title.isNotBlank(),
+                onClick = { onConfirm(title.trim()) },
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -130,12 +249,18 @@ private fun ConnectHint(error: String? = null) {
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun SummaryRow(s: ConversationSummary, generating: Boolean, onClick: () -> Unit) {
+private fun SummaryRow(
+    s: ConversationSummary,
+    generating: Boolean,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit,
+) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

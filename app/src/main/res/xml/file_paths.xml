@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="updates" path="updates/" />
+    <!-- 从远程拉回来的媒体（看图 / 听录音 / 看视频）：用系统播放器打开时经 FileProvider 授权 -->
+    <cache-path name="media" path="media/" />
 </paths>

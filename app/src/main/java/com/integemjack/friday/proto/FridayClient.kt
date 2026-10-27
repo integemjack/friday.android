@@ -7,7 +7,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -15,6 +17,25 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.UUID
+
+/** 每块最多 1 MB（REMOTE.md §6：fs.read / file.read / file.upload 同一个上限，同 Qt RemoteProtocol::chunkBytes） */
+const val CHUNK_BYTES = 1024 * 1024
+
+/** file.read / fs.read 的一块回执 */
+data class FileChunk(val data: ByteArray, val size: Long, val eof: Boolean) {
+    override fun equals(other: Any?): Boolean =
+        other is FileChunk && size == other.size && eof == other.eof && data.contentEquals(other.data)
+
+    override fun hashCode(): Int = data.contentHashCode() * 31 + size.hashCode()
+
+    companion object {
+        fun fromJson(o: JsonObject): FileChunk {
+            val text = o.str("data") ?: ""
+            val bytes = if (text.isEmpty()) ByteArray(0) else java.util.Base64.getDecoder().decode(text)
+            return FileChunk(bytes, o.long("size") ?: bytes.size.toLong(), o.bool("eof") ?: false)
+        }
+    }
+}
 
 /** 会话内容状态（订阅后事件合并的目标） */
 data class ChatState(
@@ -25,9 +46,15 @@ data class ChatState(
     val selectedChildren: Map<String, String> = emptyMap(),
     val versions: Map<String, Long> = emptyMap(),
     val runtime: Runtime? = null,
+    /** 这段会话的工作目录（工具媒体里的相对路径按它拼） */
+    val workingDirectory: String? = null,
 ) {
+    val tree: ConversationTree
+        get() = conversationTree(order.mapNotNull { nodes[it] }, selectedChildren)
     val messages: List<ChatMessage>
-        get() = conversationPath(order.mapNotNull { nodes[it] }, selectedChildren)
+        get() = tree.path
+    val branches: Map<String, BranchInfo>
+        get() = tree.branches
 }
 
 sealed interface ConnState {
@@ -55,13 +82,14 @@ data class FridayState(
  * Friday 远程客户端：SSH 桥 + JSON-RPC + 状态合并（REMOTE.md）。
  * 断线自动重连（重新 hello + 重新订阅打开的会话与活动）。
  */
-class FridayClient(private val scope: CoroutineScope, private val appVersion: String) {
+class FridayClient(private val scope: CoroutineScope, private val appVersion: String) : RemoteFiles {
 
     val state = MutableStateFlow(FridayState())
     val stateFlow: StateFlow<FridayState> get() = state
 
     private var transport: SshTransport? = null
     private var rpc: RpcClient? = null
+    private var files: FileTransfer? = null
     private var eventJob: Job? = null
     private var reconnectJob: Job? = null
     private var lastConfig: SshConfig? = null
@@ -93,6 +121,7 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
             )
             this.transport = transport
             this.rpc = rpc
+            this.files = FileTransfer(rpc)
             transport.connect()
             startEventLoop(rpc)
 
@@ -183,6 +212,7 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
     private fun cleanupTransport() {
         rpc?.close()
         rpc = null
+        files = null
         transport?.close()
         transport = null
     }
@@ -291,6 +321,7 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
                     order = convo.nodes.map { it.id },
                     selectedChildren = convo.selectedChildren,
                     runtime = current.runtime,
+                    workingDirectory = convo.workingDirectory ?: current.workingDirectory,
                 ), params
             ))
         } else {
@@ -304,6 +335,7 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
                     nodes = nodes,
                     order = nodeIds.ifEmpty { current.order },
                     selectedChildren = convo.selectedChildren,
+                    workingDirectory = convo.workingDirectory ?: current.workingDirectory,
                 ), params
             ))
         }
@@ -399,6 +431,7 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
             order = convo.nodes.map { it.id },
             selectedChildren = convo.selectedChildren,
             runtime = runtime,
+            workingDirectory = convo.workingDirectory ?: runtime?.workingDirectory,
         )
         chat = mergeVersions(chat, obj)
         state.value = state.value.copy(openConversationId = id, chat = chat)
@@ -419,12 +452,13 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
         return id
     }
 
-    suspend fun submit(text: String) {
+    suspend fun submit(text: String, attachments: List<String> = emptyList()) {
         val rpc = rpc ?: throw Exception("未连接")
         val chat = state.value.chat ?: throw Exception("没有打开的会话")
         rpc.request("runner.submit", buildJsonObject {
             put("conversationID", chat.id)
             put("text", text)
+            put("attachments", JsonArray(attachments.map { JsonPrimitive(it) }))
         })
     }
 
@@ -436,6 +470,89 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
     fun stopAll() {
         scope.launch { rpc?.request("runner.stopAll") }
     }
+
+    /** 重试上一轮（runtime.canRetry 为真时可用） */
+    fun retry() {
+        val chat = state.value.chat ?: return
+        scope.launch { runCatching { rpc?.request("runner.retry", buildJsonObject { put("conversationID", chat.id) }) } }
+    }
+
+    /** 上一轮被停后暂停的排队消息：点「发送」接着发 */
+    fun resumeQueue() {
+        val chat = state.value.chat ?: return
+        scope.launch { runCatching { rpc?.request("runner.resumeQueue", buildJsonObject { put("conversationID", chat.id) }) } }
+    }
+
+    /** 从队列里删掉一条 */
+    fun removeQueued(itemID: String) {
+        val chat = state.value.chat ?: return
+        scope.launch {
+            runCatching {
+                rpc?.request("runner.removeQueued", buildJsonObject {
+                    put("conversationID", chat.id)
+                    put("itemID", itemID)
+                })
+            }
+        }
+    }
+
+    /** 切到另一条分支（parentKey 空串 = 根消息那一层） */
+    fun selectBranch(child: String, parentKey: String) {
+        val chat = state.value.chat ?: return
+        scope.launch {
+            runCatching {
+                rpc?.request("runner.selectBranch", buildJsonObject {
+                    put("conversationID", chat.id)
+                    put("child", child)
+                    put("parentKey", parentKey)
+                })
+            }
+        }
+        // 乐观更新：服务端的 conversation 快照随后会再对齐
+        updateChat(chat.id) {
+            it.copy(selectedChildren = it.selectedChildren + (parentKey to child))
+        }
+    }
+
+    // MARK: 会话管理
+
+    suspend fun renameConversation(id: String, title: String) {
+        rpc?.request("conversation.rename", buildJsonObject {
+            put("id", id)
+            put("title", title)
+        })
+    }
+
+    suspend fun setPinned(id: String, pinned: Boolean) {
+        rpc?.request("conversation.setPinned", buildJsonObject {
+            put("id", id)
+            put("pinned", pinned)
+        })
+    }
+
+    /** 删会话（服务端会停掉它的生成和子 Agent、删它的媒体） */
+    suspend fun removeConversation(id: String) {
+        rpc?.request("conversation.remove", buildJsonObject { put("id", id) })
+        if (state.value.openConversationId == id) {
+            state.value = state.value.copy(openConversationId = null, chat = null)
+        }
+    }
+
+    // MARK: 文件（REMOTE.md §6：file.read / fs.read / file.upload，具体分块在 FileTransfer）
+
+    private fun files(): FileTransfer = files ?: throw Exception("未连接")
+
+    /** 读消息附件的一段（media = 附件的 relativePath） */
+    override suspend fun readMediaChunk(relativePath: String, offset: Long, length: Int): FileChunk =
+        files().readMediaChunk(relativePath, offset, length)
+
+    /** 读远程机器上任意文件的一段（工具里的本地媒体路径用这个） */
+    override suspend fun readFileChunk(path: String, offset: Long, length: Int): FileChunk =
+        files().readFileChunk(path, offset, length)
+
+    /** 上传一个本地文件，返回服务端上的路径（runner.submit 的 attachments 用它） */
+    suspend fun uploadFile(file: java.io.File, onProgress: (Float) -> Unit = {}): String =
+        files().uploadFile(file, onProgress)
 
     /** 批准 / 拒绝（或回答 ask_user） */
     suspend fun resolveApproval(eventID: String, approved: Boolean, answers: List<String>? = null) {

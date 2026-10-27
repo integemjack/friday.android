@@ -51,9 +51,46 @@ fun SettingsScreen() {
     ) {
         ServerCard()
         UpdateCard()
+        StorageCard()
         AboutCard()
     }
 }
+
+/** 媒体缓存：看过的图片 / 录音 / 视频存在本机，第二次不再走网络 */
+@Composable
+private fun StorageCard() {
+    val context = LocalContext.current
+    var revision by remember { mutableStateOf(0) }
+    val mediaBytes = remember(revision) { dirSize(mediaCacheDir(context)) }
+    val uploadBytes = remember(revision) { dirSize(java.io.File(context.cacheDir, "uploads")) }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("缓存", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "看过的媒体 ${formatBytes(mediaBytes).ifBlank { "0 B" }}" +
+                    (if (uploadBytes > 0) " · 待传附件 ${formatBytes(uploadBytes)}" else ""),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedButton(
+                enabled = mediaBytes > 0 || uploadBytes > 0,
+                onClick = {
+                    mediaCacheDir(context).listFiles()?.forEach { it.delete() }
+                    java.io.File(context.cacheDir, "uploads").listFiles()?.forEach { it.delete() }
+                    revision++
+                },
+            ) { Text("清掉缓存") }
+            Text(
+                "清掉后再看同一张图会重新从远程机器拉一次，不影响远程的文件。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun dirSize(dir: java.io.File): Long =
+    dir.listFiles()?.sumOf { if (it.isDirectory) dirSize(it) else it.length() } ?: 0L
 
 @Composable
 private fun ServerCard() {

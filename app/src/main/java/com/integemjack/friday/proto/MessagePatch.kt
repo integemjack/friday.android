@@ -70,9 +70,13 @@ fun applyBlocks(blocks: List<MessageBlock>, patch: BlocksPatch): List<MessageBlo
         val baseTool = blockTool(base) ?: return null
         var event = baseTool
         if (item.tool != null) {
-            // 服务端发来的工具字段不带 transcript，保留原有运行记录
+            // 服务端发来的工具字段不带 transcript，保留原有运行记录；
+            // 没带媒体时也保留原来的（否则流式途中一个补丁就把已经显示出来的图抹了）
             val incoming = item.tool
-            event = incoming.copy(transcript = baseTool.transcript)
+            event = incoming.copy(
+                transcript = baseTool.transcript,
+                media = if (incoming.media.isEmpty()) baseTool.media else incoming.media,
+            )
         }
         if (item.transcript != null) {
             val transcript = applyBlocks(event.transcript, item.transcript) ?: return null
@@ -121,6 +125,21 @@ private object ToolEventSerializer : kotlinx.serialization.KSerializer<ToolEvent
             if (value.queued) put("queued", true)
             if (value.stopped) put("stopped", true)
             value.agentName?.let { put("agentName", it) }
+            if (value.media.isNotEmpty()) {
+                put("media", JsonArray(value.media.map { m ->
+                    buildJsonObject {
+                        put("id", m.id)
+                        put("kind", m.kind)
+                        put("relativePath", m.relativePath)
+                        put("fileName", m.fileName)
+                        put("mimeType", m.mimeType)
+                        put("byteCount", m.byteCount)
+                        m.caption?.let { put("caption", it) }
+                        m.width?.let { put("width", it) }
+                        m.height?.let { put("height", it) }
+                    }
+                }))
+            }
             if (value.transcript.isNotEmpty()) {
                 put("transcript", JsonArray(value.transcript.map { b ->
                     buildJsonObject {

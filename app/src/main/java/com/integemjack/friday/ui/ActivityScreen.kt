@@ -1,5 +1,6 @@
 package com.integemjack.friday.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,10 +35,19 @@ import kotlinx.coroutines.launch
 
 /** 活动总览：这台远程机器所有会话的实时动静 + 待确认的调用 / 提问 */
 @Composable
-fun ActivityScreen() {
+fun ActivityScreen(onOpen: () -> Unit = {}) {
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
+    var openError by remember { mutableStateOf<String?>(null) }
+
+    fun openSession(id: String) {
+        scope.launch {
+            runCatching { model.client.subscribeConversation(id) }
+                .onSuccess { onOpen() }
+                .onFailure { openError = it.message }
+        }
+    }
 
     LaunchedEffect(Unit) { model.client.refresh() }
 
@@ -105,6 +115,7 @@ fun ActivityScreen() {
                             "来自：${activity.title.ifBlank { "会话" }}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.clickable { openSession(activity.id) },
                         )
                     }
                 }
@@ -116,12 +127,21 @@ fun ActivityScreen() {
         if (others.isEmpty()) {
             item { Text("没有在跑的会话", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
-        items(others, key = { it.id }) { a -> ActivityRow(a) }
+        items(others, key = { it.id }) { a -> ActivityRow(a) { openSession(a.id) } }
+    }
+
+    openError?.let { err ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { openError = null },
+            title = { Text("打开会话失败") },
+            text = { Text(err) },
+            confirmButton = { TextButton(onClick = { openError = null }) { Text("好") } },
+        )
     }
 }
 
 @Composable
-private fun ActivityRow(a: SessionActivity) {
+private fun ActivityRow(a: SessionActivity, onClick: () -> Unit) {
     val (icon, color) = when (a.status) {
         "running" -> "▶" to MaterialTheme.colorScheme.primary
         "approval", "question" -> "!" to MaterialTheme.colorScheme.tertiary
@@ -129,7 +149,7 @@ private fun ActivityRow(a: SessionActivity) {
         "error" -> "✕" to MaterialTheme.colorScheme.error
         else -> "·" to MaterialTheme.colorScheme.onSurfaceVariant
     }
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(icon, color = color, style = MaterialTheme.typography.titleSmall)
