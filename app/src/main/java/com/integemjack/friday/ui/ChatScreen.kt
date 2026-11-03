@@ -34,26 +34,34 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Queue
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -71,6 +79,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.integemjack.friday.proto.BranchInfo
 import com.integemjack.friday.proto.ChatMessage
@@ -174,13 +183,39 @@ fun ChatScreen(onBack: () -> Unit) {
     val canSend = (input.isNotBlank() || readyPaths.isNotEmpty()) && !uploading
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ),
                 title = {
                     Column {
-                        Text(chat?.title?.ifBlank { "（无标题）" } ?: "会话", maxLines = 1)
-                        if (runtime?.generating == true) {
-                            Text("生成中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            chat?.title?.ifBlank { "（无标题）" } ?: "会话",
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (runtime?.generating == true) {
+                                Dot(MaterialTheme.colorScheme.primary, 6.dp)
+                                Spacer(Modifier.width(5.dp))
+                                Text(
+                                    "生成中…",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            } else {
+                                val place = workingDirectory?.trimEnd('/')?.substringAfterLast('/')
+                                Text(
+                                    place?.takeIf { it.isNotBlank() } ?: "已连上",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                            }
                         }
                     }
                 },
@@ -188,7 +223,13 @@ fun ChatScreen(onBack: () -> Unit) {
                     IconButton(onClick = {
                         model.client.closeConversation()
                         onBack()
-                    }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
+                    }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 },
             )
         },
@@ -205,17 +246,34 @@ fun ChatScreen(onBack: () -> Unit) {
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                            .padding(horizontal = 12.dp, vertical = 3.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.8f))
+                            .padding(start = 12.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        Icon(
+                            Icons.Filled.ErrorOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
                         Text(
                             "上一轮没成",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f),
                         )
-                        FilledTonalButton(onClick = { model.client.retry() }) {
-                            Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        FilledTonalButton(
+                            onClick = { model.client.retry() },
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(Modifier.width(6.dp))
                             Text("重试")
                         }
@@ -231,8 +289,8 @@ fun ChatScreen(onBack: () -> Unit) {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                        .padding(start = 6.dp, end = 10.dp, top = 6.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.Bottom,
                 ) {
                     AttachmentButton(
                         enabled = chat != null,
@@ -246,32 +304,56 @@ fun ChatScreen(onBack: () -> Unit) {
                     OutlinedTextField(
                         value = input,
                         onValueChange = { input = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text(if (uploading) "附件上传中…" else "发消息…") },
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(24.dp)),
+                        placeholder = {
+                            Text(
+                                if (uploading) "附件上传中…" else "发消息…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        shape = RoundedCornerShape(24.dp),
                         maxLines = 4,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        ),
                     )
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(6.dp))
                     if (runtime?.generating == true) {
-                        IconButton(onClick = { model.client.stop() }) {
-                            Icon(Icons.Filled.Stop, contentDescription = "停止", tint = MaterialTheme.colorScheme.error)
+                        FilledIconButton(
+                            onClick = { model.client.stop() },
+                            modifier = Modifier.size(44.dp),
+                            colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Icon(Icons.Filled.Stop, contentDescription = "停止", modifier = Modifier.size(20.dp))
                         }
                     } else {
-                        IconButton(
+                        FilledIconButton(
                             enabled = canSend,
                             onClick = {
                                 val text = input.trim()
-                                if (text.isEmpty() && readyPaths.isEmpty()) return@IconButton
+                                if (text.isEmpty() && readyPaths.isEmpty()) return@FilledIconButton
                                 input = ""
                                 attachments.clear()
                                 localCopies.values.forEach { it.delete() }
                                 localCopies.clear()
                                 scope.launch { runCatching { model.client.submit(text, readyPaths) } }
                             },
+                            modifier = Modifier.size(44.dp),
                         ) {
                             if (uploading) {
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                             } else {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送", modifier = Modifier.size(20.dp))
                             }
                         }
                     }
@@ -280,9 +362,11 @@ fun ChatScreen(onBack: () -> Unit) {
         },
         floatingActionButton = {
             if (chat != null && messages.isNotEmpty() && !atBottom) {
-                SmallFloatingActionButton(onClick = {
-                    scope.launch { listState.animateScrollToItem(messages.size - 1) }
-                }) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "回到最新") }
+                SmallFloatingActionButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(messages.size - 1) } },
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "回到最新") }
             }
         },
     ) { padding ->
@@ -296,8 +380,8 @@ fun ChatScreen(onBack: () -> Unit) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(messages, key = { it.id }) { message ->
                     Box {
@@ -377,20 +461,30 @@ private fun QueueBar(runtime: Runtime) {
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.34f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Filled.Queue,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(15.dp),
+            )
+            Spacer(Modifier.width(7.dp))
             Text(
                 if (runtime.queuePaused) "排队已暂停（${queue.size}）" else "排队中（${queue.size}）",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
                 modifier = Modifier.weight(1f),
             )
             if (runtime.queuePaused && queue.isNotEmpty()) {
-                TextButton(onClick = { model.client.resumeQueue() }) { Text("接着发") }
+                TextButton(
+                    onClick = { model.client.resumeQueue() },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                ) { Text("接着发", style = MaterialTheme.typography.labelLarge) }
             }
         }
         queue.forEach { item -> QueuedRow(item) }
@@ -431,10 +525,11 @@ private fun MessageBubble(
     onLongPress: () -> Unit,
 ) {
     val fromUser = message.role == "user"
+    val extra = com.integemjack.friday.ui.theme.LocalFridayExtra.current
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(start = if (fromUser) 48.dp else 0.dp, end = if (fromUser) 0.dp else 48.dp),
+            .padding(start = if (fromUser) 56.dp else 0.dp, end = if (fromUser) 0.dp else 0.dp),
         horizontalAlignment = if (fromUser) Alignment.End else Alignment.Start,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -443,33 +538,33 @@ private fun MessageBubble(
                 Spacer(Modifier.width(6.dp))
             }
             message.fromAgent?.let {
-                Text(
-                    "子 Agent · $it",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.tertiary,
-                )
+                Chip("子 Agent · $it", color = MaterialTheme.colorScheme.tertiary)
             }
             message.sentBy?.let {
-                Text(
-                    "助手发送 · 来自 $it",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.tertiary,
-                )
+                Chip("来自 $it", color = MaterialTheme.colorScheme.tertiary)
             }
         }
+        if (branch != null && branch.count > 1) Spacer(Modifier.height(4.dp))
         Column(
             Modifier
-                .clip(RoundedCornerShape(16.dp, if (fromUser) 4.dp else 16.dp, if (fromUser) 16.dp else 4.dp, 16.dp))
+                .clip(
+                    RoundedCornerShape(
+                        topStart = 20.dp,
+                        topEnd = 20.dp,
+                        bottomEnd = if (fromUser) 6.dp else 20.dp,
+                        bottomStart = if (fromUser) 20.dp else 6.dp,
+                    )
+                )
                 .background(
                     if (fromUser) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant
+                    else MaterialTheme.colorScheme.surfaceContainerLow
                 )
                 .combinedClickable(
                     onClick = {},
                     onLongClick = onLongPress,
                 )
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             message.blocks.forEach { block -> BlockView(block, workingDirectory) }
             if (message.blocks.none { b -> blockText(b) != null || blockTool(b) != null || blockMedia(b) != null }) {
@@ -477,21 +572,52 @@ private fun MessageBubble(
             }
         }
         if (message.error != null) {
-            Text("⚠ ${message.error}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.ErrorOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    message.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
         if (message.stoppedByUser) {
-            Text("已停止", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "已停止",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 3.dp),
+            )
         }
         message.stats?.let { stats ->
             if (stats.tokenCount > 0) {
-                Text(
-                    buildString {
-                        append("${kotlin.math.round(stats.tokensPerSecond).toInt()} tok/s · ${stats.tokenCount} tokens")
-                        stats.engineName?.let { append(" · $it") }
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(
+                    Modifier.padding(top = 5.dp, start = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = extra.success.copy(alpha = 0.8f),
+                        modifier = Modifier.size(12.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        buildString {
+                            append("${kotlin.math.round(stats.tokensPerSecond).toInt()} tok/s · ${stats.tokenCount} tokens")
+                            stats.engineName?.let { append(" · $it") }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -502,9 +628,9 @@ private fun MessageBubble(
 private fun BranchSwitcher(branch: BranchInfo, onSwitchBranch: (child: String, parentKey: String) -> Unit) {
     Row(
         Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 2.dp, vertical = 0.dp),
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(
@@ -512,8 +638,15 @@ private fun BranchSwitcher(branch: BranchInfo, onSwitchBranch: (child: String, p
                 val index = (branch.index - 1 + branch.count) % branch.count
                 branch.siblings.getOrNull(index)?.let { onSwitchBranch(it, branch.parentKey) }
             },
-            modifier = Modifier.size(22.dp),
-        ) { Icon(Icons.Filled.ChevronLeft, contentDescription = "上一条分支", modifier = Modifier.size(14.dp)) }
+            modifier = Modifier.size(24.dp),
+        ) {
+            Icon(
+                Icons.Filled.ChevronLeft,
+                contentDescription = "上一条分支",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Text(
             "${branch.index + 1}/${branch.count}",
             style = MaterialTheme.typography.labelSmall,
@@ -524,8 +657,15 @@ private fun BranchSwitcher(branch: BranchInfo, onSwitchBranch: (child: String, p
                 val index = (branch.index + 1) % branch.count
                 branch.siblings.getOrNull(index)?.let { onSwitchBranch(it, branch.parentKey) }
             },
-            modifier = Modifier.size(22.dp),
-        ) { Icon(Icons.Filled.ChevronRight, contentDescription = "下一条分支", modifier = Modifier.size(14.dp)) }
+            modifier = Modifier.size(24.dp),
+        ) {
+            Icon(
+                Icons.Filled.ChevronRight,
+                contentDescription = "下一条分支",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -533,7 +673,7 @@ private fun BranchSwitcher(branch: BranchInfo, onSwitchBranch: (child: String, p
 fun BlockView(block: MessageBlock, workingDirectory: String? = null) {
     val text = blockText(block)
     if (text != null) {
-        Text(text, style = MaterialTheme.typography.bodyMedium)
+        Text(text, style = MaterialTheme.typography.bodyLarge)
         return
     }
     val thinking = blockThinking(block)
@@ -556,16 +696,34 @@ fun BlockView(block: MessageBlock, workingDirectory: String? = null) {
 @Composable
 private fun ThinkingBlock(content: String) {
     var expanded by remember { mutableStateOf(false) }
-    Column(Modifier.clickable { expanded = !expanded }.animateContentSize()) {
-        Text(
-            if (expanded) "思考 ▾" else "思考 …",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f))
+            .clickable { expanded = !expanded }
+            .animateContentSize()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Filled.Psychology,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (expanded) "思考 ▾" else "思考 …",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (expanded && content.isNotBlank()) {
             Text(
                 content,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -575,43 +733,46 @@ private fun ThinkingBlock(content: String) {
 @Composable
 fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
     var expanded by remember { mutableStateOf(false) }
-    val (dot, label) = when (tool.status) {
+    val extra = com.integemjack.friday.ui.theme.LocalFridayExtra.current
+    val (tint, label) = when (tool.status) {
         "awaitingApproval" -> MaterialTheme.colorScheme.tertiary to "待确认"
         "running" -> MaterialTheme.colorScheme.primary to "运行中"
-        "succeeded" -> MaterialTheme.colorScheme.secondary to "完成"
+        "succeeded" -> extra.success to "完成"
         "failed" -> MaterialTheme.colorScheme.error to "失败"
         "denied" -> MaterialTheme.colorScheme.onSurfaceVariant to "已拒绝"
         else -> MaterialTheme.colorScheme.outline to tool.status
     }
+    val icon = when (tool.status) {
+        "succeeded" -> Icons.Filled.CheckCircle
+        "failed" -> Icons.Filled.ErrorOutline
+        "awaitingApproval" -> Icons.Filled.Queue
+        else -> Icons.Filled.Terminal
+    }
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surface)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f))
             .clickable { expanded = !expanded }
             .animateContentSize()
-            .padding(8.dp),
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .width(8.dp)
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(dot)
-            )
-            Spacer(Modifier.width(8.dp))
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(7.dp))
             Text(
                 tool.title?.ifBlank { tool.name } ?: tool.name,
                 style = MaterialTheme.typography.labelLarge,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
             if (tool.status == "running") {
-                CircularProgressIndicator(Modifier.width(14.dp).height(14.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(6.dp))
             }
-            Text(label, style = MaterialTheme.typography.labelSmall, color = dot)
+            Chip(label, color = tint)
         }
         // 看图 / 看视频 / 听录音：媒体直接内嵌在卡片里（不用点开）
         ToolMedia(tool, workingDirectory)
@@ -623,6 +784,7 @@ fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         } else {
@@ -630,17 +792,10 @@ fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
                 Text(tool.preview!!, style = MaterialTheme.typography.bodySmall)
             }
             if (tool.arguments.isNotBlank() && tool.arguments != "{}") {
-                Text(
-                    tool.arguments.take(2000),
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                MonospaceBlock(tool.arguments.take(2000))
             }
             if (tool.result.isNotBlank()) {
-                Text(
-                    tool.result.take(4000),
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                )
+                MonospaceBlock(tool.result.take(4000))
             }
             // 子 Agent 运行记录（递归一层）
             tool.transcript.forEach { BlockView(it, workingDirectory) }
@@ -651,11 +806,15 @@ fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
 @Composable
 private fun GeneratingDots() {
     Row(
-        Modifier.padding(4.dp),
+        Modifier.padding(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CircularProgressIndicator(Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp)
+        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
         Spacer(Modifier.width(8.dp))
-        Text("思考中…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "思考中…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
