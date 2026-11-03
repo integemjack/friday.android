@@ -16,6 +16,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import com.integemjack.friday.schat.SchatService
 import java.util.UUID
 
 /** 每块最多 1 MB（REMOTE.md §6：fs.read / file.read / file.upload 同一个上限，同 Qt RemoteProtocol::chunkBytes） */
@@ -64,6 +65,9 @@ sealed interface ConnState {
     data class Failed(val message: String) : ConnState
 }
 
+/** 连哪一台远程 Friday（SChat 好友里的一个机器人） */
+data class RemoteTarget(val botId: Long, val botName: String)
+
 data class FridayState(
     val conn: ConnState = ConnState.Disconnected,
     val summaries: List<ConversationSummary> = emptyList(),
@@ -79,41 +83,69 @@ data class FridayState(
 }
 
 /**
- * Friday 远程客户端：SSH 桥 + JSON-RPC + 状态合并（REMOTE.md）。
- * 断线自动重连（重新 hello + 重新订阅打开的会话与活动）。
+ * Friday 远程客户端：SChat 的 WebRTC 工作通道 + JSON-RPC + 状态合并（REMOTE.md）。
+ * 断线自动重连（重新拨号 + 重新 hello + 重新订阅打开的会话与活动）。
  */
-class FridayClient(private val scope: CoroutineScope, private val appVersion: String) : RemoteFiles {
+class FridayClient(
+    private val scope: CoroutineScope,
+    private val appVersion: String,
+    private val schat: SchatService,
+) : RemoteFiles {
 
     val state = MutableStateFlow(FridayState())
     val stateFlow: StateFlow<FridayState> get() = state
 
-    private var transport: SshTransport? = null
+    private var transport: WorkTransport? = null
     private var rpc: RpcClient? = null
     private var files: FileTransfer? = null
     private var eventJob: Job? = null
     private var reconnectJob: Job? = null
-    private var lastConfig: SshConfig? = null
+    private var lastTarget: RemoteTarget? = null
     private var wantConnected = false
     private var reconnectAttempt = 0
 
     // MARK: 连接
 
-    suspend fun connect(cfg: SshConfig): ServerInfo {
+    /** 拨号到指定机器人（走 SChat 信令 + WebRTC 工作通道） */
+    suspend fun connect(target: RemoteTarget): ServerInfo {
         disconnect()
         wantConnected = true
-        lastConfig = cfg
+        lastTarget = target
         reconnectAttempt = 0
-        return doConnect(cfg)
+        return doConnect(target)
     }
 
-    private suspend fun doConnect(cfg: SshConfig): ServerInfo {
-        state.value = state.value.copy(conn = ConnState.Connecting("连接 ${cfg.user}@${cfg.host}:${cfg.port} …"))
+    private suspend fun doConnect(target: RemoteTarget): ServerInfo {
+        val schatState = schat.state.value
+        if (!schatState.online) {
+            val message = when (schatState.phase) {
+                SchatService.Phase.NotLoggedIn -> "还没登录 SChat：先在设置里登录，再选一台远程 Friday"
+                else -> "SChat 还没连上：${schatState.error ?: schatState.status.ifEmpty { "等它连上再来" }}"
+            }
+            state.value = state.value.copy(conn = ConnState.Failed(message))
+            throw IllegalStateException(message)
+        }
+        state.value = state.value.copy(conn = ConnState.Connecting("通过 SChat 呼叫 ${target.botName} …"))
         try {
-            val transport = SshTransport(
-                config = cfg,
-                onLine = { line -> rpc?.handleMessage(line) },
-                onBridgeError = { msg -> state.value = state.value.copy(conn = ConnState.Failed("远程服务：$msg")) },
-                onClosed = { onTransportClosed() },
+            val transport = WorkTransport(
+                schat = schat,
+                botId = target.botId,
+                scope = scope,
+                listener = object : WorkTransport.Listener {
+                    override fun onOpen() {
+                        // DataChannel 开了：hello 已经排队，这里不用做事
+                    }
+
+                    override fun onMessage(text: String) {
+                        rpc?.handleMessage(text)
+                    }
+
+                    override fun onClosed(reason: String, permanent: Boolean) {
+                        // 被拒 / 被顶掉 / 协议错：重拨也没用，别刷屏
+                        if (permanent) wantConnected = false
+                        onTransportClosed(reason)
+                    }
+                },
             )
             val rpc = RpcClient(
                 sendFn = { text -> transport.send(text) },
@@ -122,7 +154,7 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
             this.transport = transport
             this.rpc = rpc
             this.files = FileTransfer(rpc)
-            transport.connect()
+            transport.open()
             startEventLoop(rpc)
 
             // hello（REMOTE.md §4）
@@ -168,12 +200,13 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
         }
     }
 
-    private fun onTransportClosed() {
-        if (!wantConnected) return
+    private fun onTransportClosed(reason: String? = null) {
         scope.launch {
             cleanupTransport()
             if (state.value.conn is ConnState.Connected || state.value.conn is ConnState.Connecting) {
-                state.value = state.value.copy(conn = ConnState.Failed("连接断开，自动重连中…"))
+                state.value = state.value.copy(conn = ConnState.Failed(reason ?: "连接断开，自动重连中…"))
+            } else if (reason != null) {
+                state.value = state.value.copy(conn = ConnState.Failed(reason))
             }
             scheduleReconnect()
         }
@@ -185,9 +218,9 @@ class FridayClient(private val scope: CoroutineScope, private val appVersion: St
         val backoffMs = (10_000L * (1 + reconnectAttempt.coerceAtMost(10))).coerceAtMost(120_000L)
         reconnectJob = scope.launch {
             delay(backoffMs)
-            val cfg = lastConfig ?: return@launch
+            val target = lastTarget ?: return@launch
             reconnectAttempt++
-            runCatching { doConnect(cfg) }
+            runCatching { doConnect(target) }
                 .onSuccess {
                     reconnectAttempt = 0
                     // 重连后重新订阅打开的会话

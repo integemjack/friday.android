@@ -1,6 +1,7 @@
 # Friday Android
 
-远程 [Friday](https://github.com/integemjack/friday) 的 Android 客户端：连接跑着 Friday 的机器（SSH 桥），
+远程 [Friday](https://github.com/integemjack/friday) 的 Android 客户端：登录 SChat 账号，经 `schat-ws` 信令呼自己的机器人，
+在 WebRTC DataChannel（`friday-work`）上跑 JSON-RPC。
 
 - **会话**：看远程的全部会话、新建会话、发消息、停止；流式显示回复（含 thinking 折叠块、工具卡片、子 Agent 运行记录）
   - 长按会话：置顶、重命名、删掉；消息有多个分支时左右切换（`runner.selectBranch`）
@@ -17,7 +18,9 @@
 - **活动**：所有会话的实时动静、待确认的调用批准 / 拒绝、ask_user 问题选项点选；点会话名直接进聊天
 - **自动更新**：启动和每 6 小时查 GitHub 最新 Release，下载带进度，完成后台一键安装
 
-对应桌面版：`friday-desktop-work`（Electron）。协议按 `Friday/qt/docs/REMOTE.md`（JSON-RPC 2.0 over SSH 桥）实现。
+对应桌面版：`friday-desktop-work`（Electron），两者连法是同一套：登录 SChat → `p2p_request{callType:"work"}`
+→ offer / answer / ICE 经 `p2p_signaling` 互换 → DataChannel `friday-work` 上按 `WorkFramer` 分片跑
+JSON-RPC 2.0（协议见 `Friday/qt/docs/REMOTE.md` §2）。
 
 ## 版本与发布（GitHub Actions 自动）
 
@@ -53,10 +56,14 @@
 ```bash
 ./gradlew assembleDebug    # 调试包
 ./gradlew assembleRelease  # 正式包（需 FRIDAY_KEYSTORE_* 环境变量，缺省退化为未签名）
-./gradlew testDebugUnitTest  # 单元 + 界面测试（50 个，JVM 上跑，不用设备）
+./gradlew testDebugUnitTest  # 单元 + 界面测试（70 个，JVM 上跑，不用设备）
 ./gradlew lintDebug        # lint（CI 闸门）
 bash tools/test-bump-version.sh   # bump 逻辑测试
 ```
+
+- 另有一个默认跳过的真连测试 `LiveDialTest`（真登录 chatserver、真呼一次机器人，验信令那一半；
+  DataChannel 那半段要真机）：
+  `SCHAT_SERVER=https://host:port SCHAT_TOKEN=… SCHAT_BOT_ID=100000057 ./gradlew :app:testDebugUnitTest --tests '*LiveDialTest*'`
 
 - JDK 17（GitHub Actions 用 temurin 17）。AGP 8.7 不接受 JDK 21+，本机只有更高版本时用
   `-Dorg.gradle.java.home=<jdk17 路径>` 指过去
@@ -68,12 +75,15 @@ bash tools/test-bump-version.sh   # bump 逻辑测试
 
 ```
 app/src/main/java/com/integemjack/friday
-  proto       协议层：JSON-RPC、SSH 桥传输、消息补丁（messagePatch）、会话状态合并、
+  proto       协议层：JSON-RPC、WorkPeer（WebRTC）+ WorkSignaling（p2p_request/signaling 状态机）
+              + WorkFramer（DataChannel 分片）、WorkTransport、消息补丁（messagePatch）、会话状态合并、
               文件分块传输（FileTransfer）、媒体取与缓存（MediaLoader）
+  schat       SChat 那一头：schat-ws 连接（信令）、登录 / 凭据轮换 / 证书指纹钉住、机器人列表、ICE
   update      应用内自动更新（GitHub Releases 查询 / 进度下载 / 安装）
-  data        服务器配置（Android Keystore 加密存储）
+  data        SChat 会话与配置存储、Android Keystore 加密
   ui          Compose 界面：会话 / 聊天 / 活动 / 设置；媒体视图（MediaViews）、附件（Attachments）
-app/src/test    协议纯逻辑 + 假 RPC 的服务端 + Robolectric 界面渲染测试
+app/src/test    协议纯逻辑（含 WorkFramer / WorkSignaling）+ 假 RPC 的服务端 + Robolectric 界面渲染测试
+               + LiveDialTest（默认跳过，真连 chatserver）
 tools         bump-version.sh（CI 与本地共用）+ 测试
 ```
 

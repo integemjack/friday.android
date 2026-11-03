@@ -92,7 +92,10 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.jsch)
+    // WebRTC 工作通道（REMOTE.md §2）：SChat 信令走 okhttp（HTTPS + WebSocket），
+    // 数据通道用 stream 的 WebRTC 构建（org.webrtc 的 API，和 Secret-Chat 安卓端同一个库）。
+    implementation(libs.okhttp)
+    implementation(libs.webrtc)
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.ui.test.junit4)

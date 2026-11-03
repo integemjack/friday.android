@@ -13,15 +13,21 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import com.integemjack.friday.data.ServerStore
+import com.integemjack.friday.data.SchatStore
+import com.integemjack.friday.proto.ConnState
 import com.integemjack.friday.proto.FridayClient
 import com.integemjack.friday.proto.MediaLoader
+import com.integemjack.friday.proto.RemoteTarget
+import com.integemjack.friday.proto.WorkPeer
+import com.integemjack.friday.schat.SchatService
 import com.integemjack.friday.ui.mediaCacheDir
 import com.integemjack.friday.update.SelfUpdate
 import com.integemjack.friday.update.UpdateContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class FridayApp : Application() {
@@ -73,21 +79,53 @@ class FridayApp : Application() {
     }
 }
 
-/** 全局状态持有：协议客户端 + 服务器配置 + 媒体缓存 + 自动更新 */
+/** 全局状态持有：SChat 会话 + 协议客户端 + 媒体缓存 + 自动更新 */
 class AppModel(private val app: Application) {
     /** 自己的作用域（不依赖 FridayApp，测试里也能直接造一个） */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val client = FridayClient(scope, BuildConfig.VERSION_NAME)
-    val store = ServerStore(app)
+
+    /** SChat 账号 / 上次连的机器人（密码和 token 都是加密存的） */
+    val schatStore = SchatStore(app)
+
+    /** SChat 那一头：登录、schat-ws 信令、机器人列表、ICE */
+    val schat = SchatService(schatStore, scope, deviceName = deviceName())
+
+    val client = FridayClient(scope, BuildConfig.VERSION_NAME, schat)
     val media = MediaLoader(client, mediaCacheDir(app))
 
     private var lastAttentionTick = 0L
     private var notifiedReadyVersion: String? = null
 
+    private fun deviceName(): String {
+        val manufacturer = Build.MANUFACTURER.orEmpty().trim()
+        val model = Build.MODEL.orEmpty().trim()
+        val name = listOf(manufacturer, model).filter { it.isNotEmpty() }.joinToString(" ")
+        return name.ifEmpty { "Android" }
+    }
+
+    /** 连一台远程 Friday（走 SChat 信令拨它的工作通道） */
+    fun connectBot(botId: Long, botName: String) {
+        schat.selectBot(botId, botName)
+        scope.launch { runCatching { client.connect(RemoteTarget(botId, botName)) } }
+    }
+
     fun start() {
-        // 自动重连上次的服务器
+        // JVM 单测（Robolectric）里没有 org.webrtc 的 so：这里失败不影响其他功能，真机才用得上
+        runCatching { WorkPeer.initialize(app) }
+        // 本地有 SChat 凭据就直接连
+        schat.restore()
+        // SChat 一连上，就把上次连的那台远程 Friday 也拨回来
         scope.launch {
-            store.load()?.let { runCatching { client.connect(it) } }
+            schat.state.map { it.phase }.distinctUntilChanged().collect { phase ->
+                if (phase != SchatService.Phase.Online) return@collect
+                if (client.state.value.connected || client.state.value.conn is ConnState.Connecting) return@collect
+                val botId = schatStore.load()?.botId ?: 0L
+                if (botId <= 0) return@collect
+                val live = schat.state.value
+                val name = live.bots.firstOrNull { it.id == botId }?.name
+                    ?: live.lastBotName.ifEmpty { "机器人 $botId" }
+                runCatching { client.connect(RemoteTarget(botId, name)) }
+            }
         }
         // 自动更新：启动 8 秒后查一次，之后每 6 小时
         scope.launch {

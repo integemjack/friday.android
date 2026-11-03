@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * JSON-RPC 2.0 客户端（REMOTE.md §3/§4）：请求/回执按 id 配对、超时、事件分发。
- * 传输层负责分帧（SSH 按行），本层只处理文本消息。
+ * 传输层负责分帧（DataChannel 上用 WorkFramer 的片），本层只处理文本消息。
  */
 class RpcClient(
     private val sendFn: (String) -> Unit,

@@ -1,5 +1,6 @@
 package com.integemjack.friday.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -31,17 +33,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.integemjack.friday.BuildConfig
-import com.integemjack.friday.proto.SshConfig
+import com.integemjack.friday.proto.ConnState
+import com.integemjack.friday.schat.SchatService
 import com.integemjack.friday.update.SelfUpdate
 import kotlinx.coroutines.launch
 
-/** 设置：SSH 服务器、连接状态、版本与更新 */
+/** 设置：SChat 账号与远程 Friday、连接状态、版本与更新 */
 @Composable
 fun SettingsScreen() {
-    val model = LocalAppModel.current
-    val state by model.client.stateFlow.collectAsState()
     Column(
         Modifier
             .fillMaxSize()
@@ -49,7 +52,7 @@ fun SettingsScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        ServerCard()
+        SchatCard()
         UpdateCard()
         StorageCard()
         AboutCard()
@@ -93,99 +96,185 @@ private fun dirSize(dir: java.io.File): Long =
     dir.listFiles()?.sumOf { if (it.isDirectory) dirSize(it) else it.length() } ?: 0L
 
 @Composable
-private fun ServerCard() {
+private fun SchatCard() {
     val model = LocalAppModel.current
-    val state by model.client.stateFlow.collectAsState()
-    val saved = remember { model.store.load() }
-    var host by remember { mutableStateOf(saved?.host ?: "") }
-    var port by remember { mutableStateOf((saved?.port ?: 22).toString()) }
-    var user by remember { mutableStateOf(saved?.user ?: "") }
-    var password by remember { mutableStateOf(saved?.password ?: "") }
-    var key by remember { mutableStateOf(saved?.privateKey ?: "") }
-    var showKey by remember { mutableStateOf(false) }
+    val schatState by model.schat.state.collectAsState()
+    val conn by model.client.stateFlow.collectAsState()
+    val saved = remember { model.schatStore.load() }
+    var server by remember { mutableStateOf(saved?.server?.ifEmpty { null } ?: SchatService.DEFAULT_SERVER) }
+    var username by remember { mutableStateOf(saved?.username.orEmpty()) }
+    var password by remember { mutableStateOf("") }
+    var serverPassword by remember { mutableStateOf(saved?.serverPassword.orEmpty()) }
+    var showAdvanced by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    var error by remember { mutableStateOf<String?>(null) }
-    var connecting by remember { mutableStateOf(false) }
 
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("远程机器（SSH）", style = MaterialTheme.typography.titleMedium)
-            when (val conn = state.conn) {
-                is com.integemjack.friday.proto.ConnState.Connected ->
+            Text("SChat 账号", style = MaterialTheme.typography.titleMedium)
+            // 信令状态
+            when (val phase = schatState.phase) {
+                SchatService.Phase.NotLoggedIn ->
+                    Text("未登录：登录 SChat 账号后，就能呼叫好友里的远程 Friday", style = MaterialTheme.typography.bodySmall)
+                SchatService.Phase.LoggingIn ->
+                    Text(schatState.status.ifEmpty { "登录中…" }, style = MaterialTheme.typography.bodySmall)
+                SchatService.Phase.Connecting ->
+                    Text(schatState.status.ifEmpty { "正在连聊天服务器…" }, style = MaterialTheme.typography.bodySmall)
+                SchatService.Phase.Online ->
                     Text(
-                        "已连接：${conn.server.displayName} · ${conn.server.user}@${conn.server.hostname}（${conn.server.platform}）",
+                        "已连上 · ${schatState.username}（用户 ${schatState.userId}）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
-                is com.integemjack.friday.proto.ConnState.Connecting ->
-                    Text("连接中：${conn.message}", style = MaterialTheme.typography.bodySmall)
-                is com.integemjack.friday.proto.ConnState.Failed ->
-                    Text("连接失败：${conn.message}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                else -> Text("未连接", style = MaterialTheme.typography.bodySmall)
+                SchatService.Phase.Failed ->
+                    Text(
+                        "SChat ${schatState.status}".trim(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
             }
-            OutlinedTextField(value = host, onValueChange = { host = it }, label = { Text("主机") }, modifier = Modifier.fillMaxWidth())
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = user, onValueChange = { user = it }, label = { Text("用户名") },
-                    modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    value = port, onValueChange = { port = it }, label = { Text("端口") },
-                    modifier = Modifier.width(100.dp),
-                )
+            schatState.error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
-            OutlinedTextField(
-                value = password, onValueChange = { password = it }, label = { Text("密码（可选）") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (showKey) {
+
+            if (!schatState.hasSession) {
                 OutlinedTextField(
-                    value = key, onValueChange = { key = it },
-                    label = { Text("私钥（OpenSSH 文本，可选）") },
+                    value = server, onValueChange = { server = it },
+                    label = { Text("服务器（IP:端口，可带 https://）") },
                     modifier = Modifier.fillMaxWidth(),
-                    minLines = 4,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    singleLine = true,
                 )
-            } else {
-                TextButton(onClick = { showKey = true }) { Text("＋ 用私钥认证") }
-            }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    enabled = host.isNotBlank() && user.isNotBlank() && (password.isNotBlank() || key.isNotBlank()) && !connecting,
-                    onClick = {
-                        connecting = true
-                        error = null
-                        val cfg = SshConfig(
-                            host = host.trim(),
-                            port = port.toIntOrNull() ?: 22,
-                            user = user.trim(),
-                            password = password.takeIf { it.isNotBlank() },
-                            privateKey = key.takeIf { it.isNotBlank() },
-                        )
-                        scope.launch {
-                            model.store.save(cfg)
-                            runCatching { model.client.connect(cfg) }
-                                .onFailure { error = it.message ?: "连接失败" }
-                            connecting = false
+                OutlinedTextField(
+                    value = username, onValueChange = { username = it },
+                    label = { Text("账号（用户名 / 手机号）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = password, onValueChange = { password = it },
+                    label = { Text("密码") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                if (showAdvanced) {
+                    OutlinedTextField(
+                        value = serverPassword, onValueChange = { serverPassword = it },
+                        label = { Text("服务器密码（私有服务器才要填）") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    )
+                } else {
+                    TextButton(onClick = { showAdvanced = true }) { Text("＋ 私有服务器密码") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        enabled = server.isNotBlank() && username.isNotBlank() && password.isNotEmpty() && !busy,
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                model.schat.login(server.trim(), username.trim(), password, serverPassword.trim())
+                                busy = false
+                            }
+                        },
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
                         }
-                    },
-                ) {
-                    if (connecting) {
-                        CircularProgressIndicator(Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
+                        Text("登录")
                     }
-                    Text("连接")
                 }
-                if (state.connected) {
-                    OutlinedButton(onClick = { model.client.disconnect() }) { Text("断开") }
+            } else {
+                Text(
+                    "服务器：${schatState.server.ifEmpty { saved?.server.orEmpty() }} · 账号：${schatState.username.ifEmpty { saved?.username.orEmpty() }}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        enabled = schatState.phase != SchatService.Phase.Online,
+                        onClick = { model.schat.reconnectNow() },
+                    ) { Text("重连聊天服务器") }
+                    OutlinedButton(onClick = { model.schat.logout() }) { Text("退出登录") }
                 }
+
+                // 远程 Friday：好友里的机器人
+                Text("远程 Friday（SChat 好友里的机器人）", style = MaterialTheme.typography.titleSmall)
+                when {
+                    schatState.bots.isEmpty() ->
+                        Text(
+                            "还没有机器人。在那台电脑上把 Friday 加到 SChat 里、并和这个账号成为好友，再回来刷新。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    else -> schatState.bots.forEach { bot ->
+                        val selected = bot.id == schatState.lastBotId
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { model.connectBot(bot.id, bot.name) }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(if (selected) "●" else "○", color = MaterialTheme.colorScheme.primary)
+                            Text(bot.name.ifBlank { "机器人 ${bot.id}" }, style = MaterialTheme.typography.bodyMedium)
+                            Text("#${bot.id}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { scope.launch { model.schat.loadBots() } }) { Text("刷新列表") }
+                    val botId = schatState.lastBotId
+                    if (botId > 0) {
+                        OutlinedButton(
+                            onClick = {
+                                model.connectBot(
+                                    botId,
+                                    schatState.bots.firstOrNull { it.id == botId }?.name ?: schatState.lastBotName,
+                                )
+                            },
+                        ) { Text("重新拨号") }
+                    }
+                }
+            }
+
+            // 工作通道状态
+            val connLabel = when (val c = conn.conn) {
+                is ConnState.Connected ->
+                    "工作通道已连上：${c.server.displayName} · ${c.server.user}@${c.server.hostname}（${c.server.platform}）"
+                is ConnState.Connecting -> "呼叫中：${c.message}"
+                is ConnState.Failed -> "通道断开：${c.message}"
+                else -> "工作通道未连接"
             }
             Text(
-                "连的那台机器上要装着 Friday（桌面端或服务端）；连上后就能看它的会话、发消息、批确认。",
+                connLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = when (conn.conn) {
+                    is ConnState.Connected -> MaterialTheme.colorScheme.primary
+                    is ConnState.Failed -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            if (conn.connected) {
+                OutlinedButton(onClick = { model.client.disconnect() }) { Text("断开工作通道") }
+            }
+            Text(
+                "和工作台一样走 SChat 的 WebRTC 工作通道（P2P + TURN 中继）：要连的那台机器上装着 Friday 桌面端，" +
+                    "并在 SChat 里把它的机器人加为好友。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            schatState.phase.let { phase ->
+                if (phase == SchatService.Phase.Failed && saved != null) {
+                    TextButton(onClick = { model.schat.resetFingerprintAndReconnect() }) {
+                        Text("服务器证书换过？点这里重记证书指纹")
+                    }
+                }
+            }
         }
     }
 }

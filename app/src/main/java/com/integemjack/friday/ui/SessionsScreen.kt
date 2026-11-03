@@ -242,7 +242,7 @@ private fun ConnectHint(error: String? = null) {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "到「设置」里填那台装着 Friday 的机器（SSH），连上后这里显示它的全部会话。",
+            "到「设置」里登录 SChat 账号、选那台远程 Friday（走 WebRTC 连），连上后这里显示它的全部会话。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
