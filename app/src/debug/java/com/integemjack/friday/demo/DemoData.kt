@@ -3,6 +3,13 @@ package com.integemjack.friday.demo
 import com.integemjack.friday.AppModel
 import com.integemjack.friday.proto.AskOption
 import com.integemjack.friday.proto.AskQuestion
+import com.integemjack.friday.proto.AssistantChannel
+import com.integemjack.friday.proto.AssistantConfig
+import com.integemjack.friday.proto.AssistantEngine
+import com.integemjack.friday.proto.AssistantState
+import com.integemjack.friday.proto.Board
+import com.integemjack.friday.proto.BoardMachine
+import com.integemjack.friday.proto.BoardSession
 import com.integemjack.friday.proto.BranchInfo
 import com.integemjack.friday.proto.ChatMessage
 import com.integemjack.friday.proto.ChatState
@@ -10,6 +17,7 @@ import com.integemjack.friday.proto.ConnState
 import com.integemjack.friday.proto.ConversationSummary
 import com.integemjack.friday.proto.FridayState
 import com.integemjack.friday.proto.GenerationStats
+import com.integemjack.friday.proto.JournalEntry
 import com.integemjack.friday.proto.MessageBlock
 import com.integemjack.friday.proto.PendingApproval
 import com.integemjack.friday.proto.QueuedInput
@@ -35,6 +43,8 @@ import kotlinx.serialization.json.put
  *   chat          聊天页（文本 / 思考 / 工具卡 / 排队 / 分支）
  *   chat-running  聊天页（生成中：转圈 + 跑着的工具卡）
  *   activity      活动页（在跑的会话 + 待确认的调用 / 提问）
+ *   assistant     助手页（时间线：用户 / 助手 / 工具 / 回执 / 说明 + 状态板 + 渠道）
+ *   assistant-off 助手页（还没打开那个样子）
  *   settings      设置页
  */
 object DemoData {
@@ -67,6 +77,15 @@ object DemoData {
             pendingQuestion = listOf("A3"),
         ),
         activities = activities,
+        assistant = if (scene.startsWith("assistant") || scene == "settings") {
+            assistantState(enabled = scene != "assistant-off")
+        } else {
+            null
+        },
+        assistantEntries = if (scene == "assistant") assistantEntries else emptyList(),
+        assistantBoard = if (scene.startsWith("assistant") || scene == "settings") assistantBoard else null,
+        assistantChannels = if (scene.startsWith("assistant") || scene == "settings") assistantChannels else emptyList(),
+        assistantHasOlder = scene == "assistant",
         openConversationId = if (scene.startsWith("chat")) CHAT_ID else null,
         chat = when (scene) {
             "chat" -> chat(generating = false)
@@ -399,4 +418,167 @@ object DemoData {
     /** 没用上但留着：分支信息（会话里从 m3 分叉时界面自己算，这里只是提醒数据结构长这样） */
     @Suppress("unused")
     private val sampleBranch = BranchInfo(index = 1, count = 2, siblings = listOf("m4a", "m4b"), parentKey = "m3")
+
+    // MARK: 助手页
+
+    private fun assistantState(enabled: Boolean) = AssistantState(
+        enabled = enabled,
+        reacting = enabled,
+        reactingEntryID = if (enabled) "e7" else null,
+        config = AssistantConfig(
+            enabled = enabled,
+            name = "Friday 个人助理",
+            pushRule = "important",
+            brainEngineID = "claude-sonnet-4.5",
+            sessionEngineID = null,
+            brainThinking = "medium",
+            toolRounds = 24,
+            idleMinutes = 45,
+            digestSeconds = 30,
+            confirmDestructive = true,
+            approveFromChannels = false,
+            brainApproves = true,
+            briefWriter = true,
+            raw = null,
+        ),
+        brainEngineTitle = "Claude Sonnet 4.5",
+        engines = listOf(
+            AssistantEngine("claude-sonnet-4.5", "Claude Sonnet 4.5", "sonnet-4.5", true),
+            AssistantEngine("gpt-5", "GPT-5", "gpt-5", true),
+        ),
+    )
+
+    private val assistantBoard = Board(
+        machines = listOf(
+            BoardMachine(
+                id = "local",
+                name = "JacksMacBook-Pro",
+                online = true,
+                idle = false,
+                entries = listOf(
+                    BoardSession(
+                        machineID = "local", conversationID = "A2", shortID = "a2",
+                        title = "排查构建缓存为什么一直超时", workingDirectory = "/Users/ultra/Desktop/works/friday-android",
+                        status = "running", statusText = "在跑：跑 gradle 的 assembleDebug",
+                        line = "编译里", progress = "3/5", approvals = 0,
+                    ),
+                    BoardSession(
+                        machineID = "local", conversationID = "A3", shortID = "a3",
+                        title = "给设置页加缓存清理", workingDirectory = "/Users/ultra/Desktop/works/friday-android",
+                        status = "approval", statusText = "等你确认：要删远程目录",
+                        line = "删 build-screens", progress = "", approvals = 1,
+                    ),
+                    BoardSession(
+                        machineID = "local", conversationID = "A4", shortID = "a4",
+                        title = "整理这周的改动", workingDirectory = "/Users/ultra/Desktop/works/friday.work",
+                        status = "idle", statusText = "闲着的", line = "", progress = "", approvals = 0,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    private val assistantChannels = listOf(
+        AssistantChannel(
+            id = "c1", kind = "schat", title = "SChat", enabled = true, notify = true,
+            status = "online", statusText = "在线", botName = "Friday 助手",
+            server = "47.100.98.3:2012", hasToken = true,
+            owners = listOf("ultra"), groups = listOf("工作群"),
+        ),
+    )
+
+    private fun entry(
+        id: String,
+        at: String,
+        kind: String,
+        text: String,
+        source: String? = null,
+        interrupted: Boolean = false,
+        streaming: Boolean = false,
+        data: kotlinx.serialization.json.JsonObject? = null,
+    ) = JournalEntry(
+        id = id, at = at, kind = kind, source = source, text = text,
+        projects = emptyList(), interrupted = interrupted, streaming = streaming, data = data,
+    )
+
+    private val assistantEntries = listOf(
+        // 昨天
+        entry(
+            "e1", "2026-11-03T07:12:00Z", "notice",
+            "助手打开了，开始盯这台机器上的会话",
+        ),
+        entry(
+            "e2", "2026-11-03T07:20:00Z", "user",
+            "看下 android 那个构建为什么老超时，别改代码，先说原因",
+            source = "schat",
+        ),
+        entry(
+            "e3", "2026-11-03T07:31:00Z", "assistant",
+            "看了：不是代码的问题。那台机器上 %TEMP% 堆了 1.3 GB 的旧临时文件，Robolectric 起不来、" +
+                "gradle 的配置缓存也老是被判定过期重跑。清掉之后 12 个用例全绿，构建从 4 分多回到 1 分半。",
+        ),
+        entry(
+            "e4", "2026-11-03T07:33:00Z", "receipt",
+            "「排查构建缓存为什么一直超时」跑完了",
+            data = buildJsonObject {
+                put("machineID", "local")
+                put("conversationID", "A2")
+                put("level", "info")
+                put("status", "done")
+                put("event", "finished")
+                put("brief", "清了临时目录，测试恢复全绿；结论写在会话最后一条")
+            },
+        ),
+        // 今天
+        entry(
+            "e5", "2026-11-03T20:05:00Z", "user",
+            "安卓端的助手页也做出来，和桌面一样能看到你在忙什么、能直接吩咐你",
+        ),
+        entry(
+            "e6", "2026-11-03T20:07:00Z", "tool",
+            "读了 AssistantView.qml",
+            data = buildJsonObject {
+                put("name", "read_file")
+                put("arguments", "{\"path\":\"qt/src/app/qml/assistant/AssistantView.qml\",\"limit\":120}")
+                put("result", "（120 行）助手页：工具栏标题是助手名字 + 状态板开关；中间时间线按天分隔、从下往上排…")
+            },
+        ),
+        entry(
+            "e7", "2026-11-03T20:12:00Z", "assistant",
+            "好。安卓端原来只有会话 / 活动 / 设置三页，助手那套接口一个都没接。现在补上：底部多一个「助手」，" +
+                "进来订 assistant.subscribe，日志按天分…",
+            streaming = true,
+        ),
+        entry(
+            "e8", "2026-11-03T20:20:00Z", "receipt",
+            "「给设置页加缓存清理」有个调用等你确认",
+            data = buildJsonObject {
+                put("machineID", "local")
+                put("conversationID", "A3")
+                put("level", "warn")
+                put("status", "approval")
+                put("event", "approval")
+                put("brief", "要删 /Users/ultra/Desktop/works/friday-android/build-screens 整个目录（41 个文件）")
+                put("approvalEventID", "EV-20261104-9")
+            },
+        ),
+        entry(
+            "e9", "2026-11-03T20:26:00Z", "user",
+            "那个删目录的批准了，别清太狠",
+            source = "voice",
+        ),
+        entry(
+            "e10", "2026-11-03T20:26:40Z", "receipt",
+            "已批准：删 build-screens",
+            interrupted = false,
+            data = buildJsonObject {
+                put("machineID", "local")
+                put("conversationID", "A3")
+                put("level", "info")
+                put("status", "running")
+                put("event", "approval.resolved")
+                put("brief", "只删截图，不动仓库里的 build 缓存")
+            },
+        ),
+    )
 }

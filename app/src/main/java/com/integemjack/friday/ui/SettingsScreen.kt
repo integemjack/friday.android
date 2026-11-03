@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
@@ -70,6 +71,7 @@ fun SettingsScreen() {
     ) {
         Text("设置", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 4.dp))
         SchatCard()
+        AssistantCard()
         UpdateCard()
         StorageCard()
         AboutCard()
@@ -371,6 +373,175 @@ private fun SchatCard() {
                     Text("服务器证书换过？点这里重记证书指纹")
                 }
             }
+        }
+    }
+}
+
+/** 助手（同桌面版 设置 › 助手）：开关、名字、推什么、要不要先确认；看的是当前连上那台的 */
+@Composable
+private fun AssistantCard() {
+    val model = LocalAppModel.current
+    val state by model.client.stateFlow.collectAsState()
+    val scope = rememberCoroutineScope()
+    val assistant = state.assistant
+    var name by remember(assistant?.config?.name) { mutableStateOf(assistant?.config?.name ?: "") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    fun patch(key: String, value: kotlinx.serialization.json.JsonPrimitive) {
+        scope.launch {
+            runCatching { model.client.updateAssistantConfig(key, value) }
+                .onFailure { error = it.message }
+        }
+    }
+
+    FridayCard {
+        SectionTitle(
+            icon = Icons.Filled.SelfImprovement,
+            title = "助手",
+            trailing = {
+                androidx.compose.material3.Switch(
+                    checked = assistant?.enabled == true,
+                    enabled = state.connected && assistant != null,
+                    onCheckedChange = { on ->
+                        scope.launch {
+                            runCatching { model.client.setAssistantEnabled(on) }.onFailure { error = it.message }
+                        }
+                    },
+                )
+            },
+        )
+        Spacer(Modifier.height(8.dp))
+        when {
+            !state.connected -> Text(
+                "连上远程 Friday 之后，这里改的是那台机器上的助手（每台各一个）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            assistant == null -> Text(
+                "这台上的助手还没读到：去「助手」那一页看一眼就会订回来。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            else -> {
+                Text(
+                    if (assistant.enabled) "开着：它会盯这台机器上各段会话的动静，有事在「助手」页里说。"
+                    else "关着：只记状态板，不回话、也不通知你。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                FridayField(value = name, onValueChange = { name = it }, label = "助手的名字")
+                if (name != assistant.config.name) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = {
+                            patch("name", kotlinx.serialization.json.JsonPrimitive(name.trim()))
+                        }) { Text("改名字") }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "大脑",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Chip(assistant.brainEngineTitle ?: "跟新对话一样")
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("推什么", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("important" to "重要的事", "all" to "都推", "none" to "都不推").forEach { (value, label) ->
+                        val on = assistant.config.pushRule == value
+                        Text(
+                            label,
+                            Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(
+                                    if (on) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                    else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.5f)
+                                )
+                                .clickable { patch("pushRule", kotlinx.serialization.json.JsonPrimitive(value)) }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (on) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("破坏性的操作先问我", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "删文件、改系统这类，助手自己也不直接做",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = assistant.config.confirmDestructive,
+                        onCheckedChange = { on ->
+                            patch("confirmDestructive", kotlinx.serialization.json.JsonPrimitive(on))
+                        },
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("闲多久提醒我", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "一段会话超过这个时间没动静，助手会去看一眼",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        "${assistant.config.idleMinutes} 分钟",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (state.assistantChannels.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    HairLine()
+                    Spacer(Modifier.height(8.dp))
+                    state.assistantChannels.forEach { c ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Dot(
+                                if (c.status == "online") LocalFridayExtra.current.success
+                                else MaterialTheme.colorScheme.outline,
+                                size = 6.dp,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "${c.title} · ${c.botName.ifBlank { "没填机器人" }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                if (c.status == "online") "在线" else c.statusText.ifBlank { c.status },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (c.owners.isNotEmpty()) {
+                            Text(
+                                "认的人：" + c.owners.joinToString("、"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        error?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
     }
 }

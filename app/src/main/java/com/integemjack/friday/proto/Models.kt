@@ -511,6 +511,263 @@ data class RunnerState(
     }
 }
 
+// MARK: 助手（REMOTE.md §6「助手」/ docs\ASSISTANT.md）
+
+/**
+ * 助手日志的一条（JournalEntry）：`{id, at, kind, source?, text, projects?, refs?, interrupted?, data?, streaming?}`。
+ * `data` 按 kind 不同装不同东西（回执 / 工具 / 助手回复），这里保留原始 JSON，界面上按类型取。
+ */
+data class JournalEntry(
+    val id: String,
+    val at: String,
+    val kind: String, // user / assistant / receipt / tool / notice
+    val source: String?,
+    val text: String,
+    val projects: List<String>,
+    val interrupted: Boolean,
+    val streaming: Boolean,
+    val data: JsonObject?,
+) {
+    /** 回执（某段会话的动静）：助手页上那张状态卡 */
+    val receipt: ReceiptInfo?
+        get() = if (kind != "receipt") null else data?.let { ReceiptInfo.fromJson(it) }
+
+    /** 工具那一条 */
+    val tool: ToolInfo?
+        get() = if (kind != "tool") null else data?.let { ToolInfo.fromJson(it) }
+
+    /** 助手回复标了 silent 的不显示 */
+    val silent: Boolean get() = data?.bool("silent") ?: false
+    val error: String? get() = if (kind == "assistant") data?.str("error") else null
+
+    companion object {
+        fun fromJson(o: JsonObject): JournalEntry = JournalEntry(
+            id = o.str("id") ?: "",
+            at = o.str("at") ?: "",
+            kind = o.str("kind") ?: "notice",
+            source = o.str("source"),
+            text = o.str("text") ?: "",
+            projects = o.strList("projects"),
+            interrupted = o.bool("interrupted") ?: false,
+            streaming = o.bool("streaming") ?: false,
+            data = o["data"] as? JsonObject,
+        )
+    }
+}
+
+/** 回执的 data：`{machineID, conversationID, level, status, event, brief?, approvalEventID?, woke?}` */
+data class ReceiptInfo(
+    val machineID: String?,
+    val conversationID: String?,
+    val level: String,
+    val status: String,
+    val event: String,
+    val brief: String?,
+    val approvalEventID: String?,
+    val woke: Boolean,
+) {
+    /** 有它就能在这张卡上直接批 / 拒（assistant.resolveApproval） */
+    val needsDecision: Boolean get() = approvalEventID != null
+
+    companion object {
+        fun fromJson(o: JsonObject): ReceiptInfo = ReceiptInfo(
+            machineID = o.str("machineID"),
+            conversationID = o.str("conversationID"),
+            level = o.str("level") ?: "info",
+            status = o.str("status") ?: "",
+            event = o.str("event") ?: "",
+            brief = o.str("brief"),
+            approvalEventID = o.str("approvalEventID"),
+            woke = o.bool("woke") ?: false,
+        )
+    }
+}
+
+/** 工具那条的 data：`{name, arguments, result, reply}` */
+data class ToolInfo(val name: String, val arguments: String?, val result: String?, val reply: String?) {
+    companion object {
+        fun fromJson(o: JsonObject): ToolInfo = ToolInfo(
+            name = o.str("name") ?: "",
+            arguments = o.str("arguments"),
+            result = o.str("result"),
+            reply = o.str("reply"),
+        )
+    }
+}
+
+/** 助手能用的大脑（AssistantState.engines 的一项） */
+data class AssistantEngine(val id: String, val title: String, val model: String, val supportsTools: Boolean) {
+    companion object {
+        fun fromJson(o: JsonObject): AssistantEngine = AssistantEngine(
+            id = o.str("id") ?: "",
+            title = o.str("title") ?: "",
+            model = o.str("model") ?: "",
+            supportsTools = o.bool("supportsTools") ?: false,
+        )
+    }
+}
+
+/** AssistantConfig（ASSISTANT.md §9）：界面上只用到其中几项，其余原样留着好回写 */
+data class AssistantConfig(
+    val enabled: Boolean,
+    val name: String,
+    val pushRule: String, // important / all / none
+    val brainEngineID: String?,
+    val sessionEngineID: String?,
+    val brainThinking: String?,
+    val toolRounds: Int,
+    val idleMinutes: Int,
+    val digestSeconds: Int,
+    val confirmDestructive: Boolean,
+    val approveFromChannels: Boolean,
+    val brainApproves: Boolean,
+    val briefWriter: Boolean,
+    val raw: JsonObject?,
+) {
+    companion object {
+        fun fromJson(o: JsonObject): AssistantConfig = AssistantConfig(
+            enabled = o.bool("enabled") ?: false,
+            name = o.str("name") ?: "Friday 个人助理",
+            pushRule = o.str("pushRule") ?: "important",
+            brainEngineID = o.str("brainEngineID"),
+            sessionEngineID = o.str("sessionEngineID"),
+            brainThinking = o.str("brainThinking"),
+            toolRounds = o.long("toolRounds")?.toInt() ?: 0,
+            idleMinutes = o.long("idleMinutes")?.toInt() ?: 0,
+            digestSeconds = o.long("digestSeconds")?.toInt() ?: 0,
+            confirmDestructive = o.bool("confirmDestructive") ?: true,
+            approveFromChannels = o.bool("approveFromChannels") ?: false,
+            brainApproves = o.bool("brainApproves") ?: false,
+            briefWriter = o.bool("briefWriter") ?: false,
+            raw = o,
+        )
+    }
+}
+
+/** AssistantState：`{enabled, reacting, reactingEntryID?, config, brainEngineTitle?, engines}` */
+data class AssistantState(
+    val enabled: Boolean,
+    val reacting: Boolean,
+    val reactingEntryID: String?,
+    val config: AssistantConfig,
+    val brainEngineTitle: String?,
+    val engines: List<AssistantEngine>,
+) {
+    /** 正在说话（大脑在出字）：界面上显示进度、给「打断」按钮 */
+    val speaking: Boolean get() = reacting
+
+    companion object {
+        fun fromJson(o: JsonObject): AssistantState = AssistantState(
+            enabled = o.bool("enabled") ?: false,
+            reacting = o.bool("reacting") ?: false,
+            reactingEntryID = o.str("reactingEntryID"),
+            config = (o["config"] as? JsonObject)?.let { AssistantConfig.fromJson(it) }
+                ?: AssistantConfig.fromJson(JsonObject(emptyMap())),
+            brainEngineTitle = o.str("brainEngineTitle"),
+            engines = (o["engines"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                (it as? JsonObject)?.let { e -> AssistantEngine.fromJson(e) }
+            } ?: emptyList(),
+        )
+    }
+}
+
+/** 聊天工具渠道（Channel）：SChat 机器人那头的绑定 */
+data class AssistantChannel(
+    val id: String,
+    val kind: String,
+    val title: String,
+    val enabled: Boolean,
+    val notify: Boolean,
+    val status: String, // off / connecting / online / error
+    val statusText: String,
+    val botName: String,
+    val server: String,
+    val hasToken: Boolean,
+    val owners: List<String>,
+    val groups: List<String>,
+) {
+    companion object {
+        fun fromJson(o: JsonObject): AssistantChannel = AssistantChannel(
+            id = o.str("id") ?: "",
+            kind = o.str("kind") ?: "",
+            title = o.str("title") ?: "",
+            enabled = o.bool("enabled") ?: false,
+            notify = o.bool("notify") ?: false,
+            status = o.str("status") ?: "off",
+            statusText = o.str("statusText") ?: "",
+            botName = o.str("botName") ?: "",
+            server = o.str("server") ?: "",
+            hasToken = o.bool("hasToken") ?: false,
+            owners = (o["owners"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                (it as? JsonObject)?.str("name")
+            } ?: emptyList(),
+            groups = (o["groups"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                (it as? JsonObject)?.str("name")
+            } ?: emptyList(),
+        )
+    }
+}
+
+/** 状态板（Board）：这台机器上各段会话的实时动静，助手页顶部那行「几个在跑」用它 */
+data class BoardSession(
+    val machineID: String,
+    val conversationID: String,
+    val shortID: String,
+    val title: String,
+    val workingDirectory: String,
+    val status: String,
+    val statusText: String,
+    val line: String,
+    val progress: String,
+    val approvals: Int,
+) {
+    companion object {
+        fun fromJson(o: JsonObject): BoardSession = BoardSession(
+            machineID = o.str("machineID") ?: "",
+            conversationID = o.str("conversationID") ?: "",
+            shortID = o.str("shortID") ?: "",
+            title = o.str("title") ?: "",
+            workingDirectory = o.str("workingDirectory") ?: o.str("directory") ?: "",
+            status = o.str("status") ?: "idle",
+            statusText = o.str("statusText") ?: "",
+            line = o.str("line") ?: "",
+            progress = o.str("progress") ?: "",
+            approvals = o.long("approvals")?.toInt() ?: 0,
+        )
+    }
+}
+
+data class Board(val machines: List<BoardMachine>) {
+    val sessions: List<BoardSession> get() = machines.flatMap { it.entries }
+    val running: Int get() = sessions.count { it.status == "running" }
+    val awaiting: Int get() = sessions.sumOf { it.approvals }
+
+    companion object {
+        fun fromJson(o: JsonObject): Board = Board(
+            machines = (o["machines"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull { m ->
+                val mo = m as? JsonObject ?: return@mapNotNull null
+                BoardMachine(
+                    id = mo.str("id") ?: "",
+                    name = mo.str("name") ?: "",
+                    online = mo.bool("online") ?: false,
+                    idle = mo.bool("idle") ?: false,
+                    entries = (mo["entries"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                        (it as? JsonObject)?.let { e -> BoardSession.fromJson(e) }
+                    } ?: emptyList(),
+                )
+            } ?: emptyList(),
+        )
+    }
+}
+
+data class BoardMachine(
+    val id: String,
+    val name: String,
+    val online: Boolean,
+    val idle: Boolean,
+    val entries: List<BoardSession>,
+)
+
 // MARK: JsonObject 便捷取值
 
 fun JsonObject.str(key: String): String? =

@@ -14,9 +14,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.integemjack.friday.ui.ActivityScreen
+import com.integemjack.friday.ui.AssistantScreen
 import com.integemjack.friday.ui.ChatScreen
 import com.integemjack.friday.ui.HomeScaffold
 import com.integemjack.friday.ui.LocalAppModel
@@ -24,6 +26,7 @@ import com.integemjack.friday.ui.SettingsScreen
 import com.integemjack.friday.ui.SessionsScreen
 import com.integemjack.friday.ui.theme.FridayTheme
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -62,16 +65,20 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_TAB = "friday_tab"
         const val EXTRA_DEMO = "demo"
-        const val TAB_SESSIONS = 0
-        const val TAB_ACTIVITY = 1
-        const val TAB_SETTINGS = 2
+        const val TAB_ASSISTANT = 0
+        const val TAB_SESSIONS = 1
+        const val TAB_ACTIVITY = 2
+        const val TAB_SETTINGS = 3
     }
 }
 
 @Composable
 fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
+    val model = LocalAppModel.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var tab by rememberSaveable { mutableIntStateOf(MainActivity.TAB_SESSIONS) }
     var showChat by rememberSaveable { mutableStateOf(Demo.startInChat) }
+    var chatError by remember { mutableStateOf<String?>(null) }
     val requested by tabRequest.collectAsState()
     // 通知点进来：跳到那一页（从聊天里出来，回到主框架）
     androidx.compose.runtime.LaunchedEffect(requested) {
@@ -81,15 +88,36 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
             tabRequest.value = null
         }
     }
+    // 助手页的回执卡上点「打开」：订那段会话再进去
+    fun openConversation(id: String) {
+        scope.launch {
+            runCatching { model.client.subscribeConversation(id) }
+                .onSuccess { showChat = true }
+                .onFailure { chatError = it.message }
+        }
+    }
     if (showChat) {
         ChatScreen(onBack = { showChat = false })
     } else {
         HomeScaffold(
             tab = tab,
             onTab = { tab = it },
+            assistant = { AssistantScreen(onOpenSession = ::openConversation) },
             sessions = { SessionsScreen(onOpen = { showChat = true }) },
             activity = { ActivityScreen(onOpen = { showChat = true }) },
             settings = { SettingsScreen() },
+        )
+    }
+    chatError?.let { message ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { chatError = null },
+            title = { androidx.compose.material3.Text("那段会话打不开") },
+            text = { androidx.compose.material3.Text(message) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { chatError = null }) {
+                    androidx.compose.material3.Text("知道了")
+                }
+            },
         )
     }
 }

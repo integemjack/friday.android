@@ -78,6 +78,14 @@ data class FridayState(
     /** 当前打开的会话 id（null = 没开） */
     val openConversationId: String? = null,
     val chat: ChatState? = null,
+    /** 助手（REMOTE.md §6「助手」）：状态、日志、状态板、渠道。没订过都是 null / 空 */
+    val assistant: AssistantState? = null,
+    val assistantEntries: List<JournalEntry> = emptyList(),
+    val assistantBoard: Board? = null,
+    val assistantChannels: List<AssistantChannel> = emptyList(),
+    val assistantHasOlder: Boolean = false,
+    val assistantLoading: Boolean = false,
+    val assistantError: String? = null,
 ) {
     val connected: Boolean get() = conn is ConnState.Connected
 }
@@ -103,6 +111,8 @@ class FridayClient(
     private var lastTarget: RemoteTarget? = null
     private var wantConnected = false
     private var reconnectAttempt = 0
+    /** 助手页开着（订了 assistant.subscribe）：重连后要重新订回来 */
+    private var assistantWanted = false
 
     // MARK: 连接
 
@@ -183,6 +193,7 @@ class FridayClient(
             )
             // 连上就订活动（审批提醒）
             rpc.notify("activity.subscribe")
+            if (assistantWanted) runCatching { subscribeAssistant() }
             return server
         } catch (e: Exception) {
             // 传输层已经报过更具体的原因（比如 not_friends）就别用泛泛的「连接已关闭」盖掉它
@@ -240,6 +251,7 @@ class FridayClient(
 
     fun disconnect() {
         wantConnected = false
+        assistantWanted = false
         reconnectJob?.cancel()
         reconnectJob = null
         eventJob?.cancel()
@@ -269,7 +281,30 @@ class FridayClient(
             "runner" -> state.value = state.value.copy(runner = RunnerState.fromJson(params))
             "attention" -> state.value = state.value.copy(attentionTick = state.value.attentionTick + 1)
             "activity" -> applyActivity(params)
-            "activity.assistant" -> { /* 助手开关，暂不展示 */ }
+            "activity.assistant" -> {
+                // 这台开着自己的助手：会话归它汇报（ASSISTANT.md §4.3）。助手页顶栏那行提示用
+                val on = params.bool("enabled") ?: false
+                state.value = state.value.copy(
+                    assistant = state.value.assistant?.copy(enabled = on) ?: state.value.assistant,
+                )
+            }
+            "assistant.state" -> {
+                val s = (params["state"] as? JsonObject) ?: params
+                state.value = state.value.copy(assistant = AssistantState.fromJson(s))
+            }
+            "assistant.entry" -> applyAssistantEntry((params["entry"] as? JsonObject)?.let { JournalEntry.fromJson(it) })
+            "assistant.board" -> {
+                val board = (params["board"] as? JsonObject)?.let { Board.fromJson(it) }
+                if (board != null) state.value = state.value.copy(assistantBoard = board)
+            }
+            "assistant.channels" -> state.value = state.value.copy(
+                assistantChannels = (params["channels"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                    (it as? JsonObject)?.let { c -> AssistantChannel.fromJson(c) }
+                } ?: emptyList(),
+            )
+            "assistant.reset" -> state.value = state.value.copy(
+                assistantEntries = emptyList(), assistantHasOlder = false,
+            )
             "conversation" -> applyConversation(params)
             "message" -> applyMessage(params, patch = false)
             "message.patch" -> applyMessage(params, patch = true)
@@ -551,6 +586,122 @@ class FridayClient(
         updateChat(chat.id) {
             it.copy(selectedChildren = it.selectedChildren + (parentKey to child))
         }
+    }
+
+    // MARK: 助手（REMOTE.md §6「助手」）
+
+    /** 进助手页时订阅：拿状态 + 最近 count 条日志 + 状态板 + 渠道；之后收 assistant.* 事件 */
+    suspend fun subscribeAssistant(count: Int = 100) {
+        val rpc = rpc ?: throw Exception("未连接")
+        assistantWanted = true
+        state.value = state.value.copy(assistantLoading = true, assistantError = null)
+        try {
+            val obj = rpc.request("assistant.subscribe", buildJsonObject { put("count", count) }).jsonObject
+            state.value = state.value.copy(
+                assistant = (obj["state"] as? JsonObject)?.let { AssistantState.fromJson(it) },
+                assistantBoard = (obj["board"] as? JsonObject)?.let { Board.fromJson(it) },
+                assistantEntries = journalEntries(obj["entries"]),
+                assistantChannels = (obj["channels"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                    (it as? JsonObject)?.let { c -> AssistantChannel.fromJson(c) }
+                } ?: emptyList(),
+                assistantHasOlder = true,
+                assistantLoading = false,
+            )
+        } catch (e: Exception) {
+            state.value = state.value.copy(
+                assistantLoading = false,
+                assistantError = if (e is RpcException && e.code == RpcErrors.MethodNotFound)
+                    "这台上的 Friday 还没有助手（2.3 之前的版本没有这套接口）"
+                else e.message ?: "订阅助手失败",
+            )
+        }
+    }
+
+    /** 离开助手页：不再收它的事件（数据留着，回来再订） */
+    fun leaveAssistant() {
+        if (!assistantWanted) return
+        assistantWanted = false
+        rpc?.notify("assistant.unsubscribe")
+    }
+
+    /** 往上翻更早的日志（assistant.history：before = 最早那条的时间） */
+    suspend fun loadOlderAssistant() {
+        val rpc = rpc ?: return
+        val state0 = state.value
+        if (state0.assistantLoading) return
+        val oldest = state0.assistantEntries.minByOrNull { it.at }?.at ?: return
+        state.value = state0.copy(assistantLoading = true)
+        runCatching {
+            val obj = rpc.request("assistant.history", buildJsonObject {
+                put("before", oldest)
+                put("limit", 100)
+            }).jsonObject
+            val older = journalEntries(obj["entries"])
+            state.value = state.value.copy(
+                assistantEntries = (older + state.value.assistantEntries).distinctBy { it.id }
+                    .sortedBy { it.at },
+                assistantHasOlder = obj.bool("hasOlder") ?: false,
+                assistantLoading = false,
+            )
+        }.onFailure { state.value = state.value.copy(assistantLoading = false) }
+    }
+
+    /** 对助手说话（assistant.say） */
+    suspend fun sayToAssistant(text: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        rpc.request("assistant.say", buildJsonObject { put("text", text) })
+    }
+
+    /** 打断正在说的（assistant.stop） */
+    fun stopAssistant() {
+        val rpc = rpc ?: return
+        scope.launch { runCatching { rpc.request("assistant.stop") } }
+    }
+
+    /** 开 / 关助手（assistant.settings.update）：先本地改，失败了退回 */
+    suspend fun setAssistantEnabled(enabled: Boolean) {
+        val rpc = rpc ?: throw Exception("未连接")
+        val before = state.value.assistant
+        state.value = state.value.copy(assistant = before?.copy(enabled = enabled, config = before.config.copy(enabled = enabled)))
+        try {
+            rpc.request("assistant.settings.update", buildJsonObject { put("enabled", enabled) })
+        } catch (e: Exception) {
+            state.value = state.value.copy(assistant = before, assistantError = e.message)
+            throw e
+        }
+    }
+
+    /** 改助手设置里的一项（assistant.settings.update）：名字、推什么、空闲多久提醒…… */
+    suspend fun updateAssistantConfig(key: String, value: kotlinx.serialization.json.JsonElement) {
+        val rpc = rpc ?: throw Exception("未连接")
+        rpc.request("assistant.settings.update", buildJsonObject { put(key, value) })
+    }
+
+    /** 回执卡上的「批准 / 拒绝」：转给那台机器（assistant.resolveApproval） */
+    suspend fun resolveAssistantApproval(machineID: String, eventID: String, approved: Boolean) {
+        val rpc = rpc ?: return
+        runCatching {
+            rpc.request("assistant.resolveApproval", buildJsonObject {
+                put("machineID", machineID)
+                put("eventID", eventID)
+                put("approved", approved)
+            })
+        }
+        refreshActivities()
+    }
+
+    private fun journalEntries(element: kotlinx.serialization.json.JsonElement?): List<JournalEntry> =
+        (element as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+            (it as? JsonObject)?.let { e -> JournalEntry.fromJson(e) }
+        }?.sortedBy { it.at } ?: emptyList()
+
+    /** 日志加了一条 / 改了同一条（流式的回复按 id 合并，80 毫秒一批） */
+    private fun applyAssistantEntry(entry: JournalEntry?) {
+        if (entry == null || entry.id.isEmpty()) return
+        val list = state.value.assistantEntries.toMutableList()
+        val index = list.indexOfFirst { it.id == entry.id }
+        if (index >= 0) list[index] = entry else list.add(entry)
+        state.value = state.value.copy(assistantEntries = list.sortedBy { it.at })
     }
 
     // MARK: 会话管理
