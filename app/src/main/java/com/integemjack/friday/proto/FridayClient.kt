@@ -185,7 +185,10 @@ class FridayClient(
             rpc.notify("activity.subscribe")
             return server
         } catch (e: Exception) {
-            state.value = state.value.copy(conn = ConnState.Failed(e.message ?: "连接失败"))
+            // 传输层已经报过更具体的原因（比如 not_friends）就别用泛泛的「连接已关闭」盖掉它
+            val known = (state.value.conn as? ConnState.Failed)?.message
+            val message = known?.takeIf { it.isNotBlank() && it != "连接已关闭" } ?: e.message ?: "连接失败"
+            state.value = state.value.copy(conn = ConnState.Failed(message))
             cleanupTransport()
             throw e
         }
@@ -201,6 +204,9 @@ class FridayClient(
     }
 
     private fun onTransportClosed(reason: String? = null) {
+        // 先把真实原因交给 RpcClient：在途的 hello 会带着这句失败，
+        // 否则 doConnect 的 catch 只会看到一句「连接已关闭」，把被拒的理由盖掉。
+        rpc?.close(reason ?: "连接已断开")
         scope.launch {
             cleanupTransport()
             if (state.value.conn is ConnState.Connected || state.value.conn is ConnState.Connecting) {

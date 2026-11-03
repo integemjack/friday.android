@@ -128,7 +128,7 @@ class WorkSignaling(
         }
         val text = when (reason) {
             "user_rejected" -> "机器人拒绝了工作连接（不是主人账号？）"
-            "not_friends" -> "这个机器人已经不在你的 SChat 好友里（被删了或换了账号）：重新加好友后再连"
+            "not_friends" -> "还没和这个机器人成为好友（或对方还没通过好友请求）：先在 SChat 里加它，等它通过再连"
             "error" -> "机器人那头没有工作服务（装的是 2.43+ 吗？）"
             else -> "机器人拒绝了连接（$reason）"
         }

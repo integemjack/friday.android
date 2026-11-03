@@ -112,8 +112,9 @@ class RpcClient(
         events.close()
     }
 
-    fun close() {
-        failAll(Exception("连接已关闭"))
+    /** 传输断开：所有在途请求立即失败。reason 就是界面上看到的失败原因（被拒的真实理由要能透出去） */
+    fun close(reason: String = "连接已关闭") {
+        failAll(Exception(reason))
         runCatching { closeFn() }
     }
 }
