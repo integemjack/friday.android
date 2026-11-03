@@ -65,6 +65,20 @@ bash tools/test-bump-version.sh   # bump 逻辑测试
   DataChannel 那半段要真机）：
   `SCHAT_SERVER=https://host:port SCHAT_TOKEN=… SCHAT_BOT_ID=100000057 ./gradlew :app:testDebugUnitTest --tests '*LiveDialTest*'`
 
+## 演示数据（只 debug 包）
+
+debug 包里带一份假数据（`app/src/debug`，release 包不编译），用来截图看排版：
+
+```
+adb shell am start -n com.integemjack.friday/.MainActivity --es demo sessions   # 会话列表
+adb shell am start -n com.integemjack.friday/.MainActivity --es demo chat       # 聊天页
+adb shell am start -n com.integemjack.friday/.MainActivity --es demo chat-running  # 生成中
+adb shell am start -n com.integemjack.friday/.MainActivity --es demo activity --ei friday_tab 1
+adb shell am start -n com.integemjack.friday/.MainActivity --es demo settings --ei friday_tab 2
+```
+
+不带 `--es demo` 就是正常启动。
+
 - JDK 17（GitHub Actions 用 temurin 17）。AGP 8.7 不接受 JDK 21+，本机只有更高版本时用
   `-Dorg.gradle.java.home=<jdk17 路径>` 指过去
 - Android SDK：platform 35、build-tools（AGP 自动下载）

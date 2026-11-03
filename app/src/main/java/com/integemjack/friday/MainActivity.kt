@@ -38,6 +38,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val model = (application as FridayApp).model
         tabRequest.value = intent?.getIntExtra(EXTRA_TAB, -1)?.takeIf { it >= 0 }
+        // 演示数据（只在 debug 包里有实现）：给界面填满假数据截图用，release 里是空判断
+        Demo.apply(model, intent?.getStringExtra(EXTRA_DEMO))
         setContent {
             FridayTheme {
                 CompositionLocalProvider(LocalAppModel provides model) {
@@ -59,6 +61,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_TAB = "friday_tab"
+        const val EXTRA_DEMO = "demo"
         const val TAB_SESSIONS = 0
         const val TAB_ACTIVITY = 1
         const val TAB_SETTINGS = 2
@@ -68,7 +71,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     var tab by rememberSaveable { mutableIntStateOf(MainActivity.TAB_SESSIONS) }
-    var showChat by rememberSaveable { mutableStateOf(false) }
+    var showChat by rememberSaveable { mutableStateOf(Demo.startInChat) }
     val requested by tabRequest.collectAsState()
     // 通知点进来：跳到那一页（从聊天里出来，回到主框架）
     androidx.compose.runtime.LaunchedEffect(requested) {

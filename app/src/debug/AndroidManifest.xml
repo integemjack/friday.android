@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只在 debug 包里：装一个空 provider，进程启动时把演示数据的实现塞进 Demo.hook -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="com.integemjack.friday.demo.DemoInstallProvider"
+            android:authorities="${applicationId}.demo"
+            android:exported="false" />
+    </application>
+</manifest>
