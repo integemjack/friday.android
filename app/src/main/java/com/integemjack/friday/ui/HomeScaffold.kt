@@ -1,6 +1,7 @@
 package com.integemjack.friday.ui
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -74,7 +75,9 @@ fun HomeScaffold(
             }
         }
     ) { padding ->
-        Column(Modifier.padding(padding)) {
+        // consumeWindowInsets：里面那层（助手页自己的 Scaffold）再按 safeDrawing 让位时，
+        // 系统导航条这段已经扣过了，不会重复让一次、在输入框和 tab 之间空出一条
+        Column(Modifier.padding(padding).consumeWindowInsets(padding)) {
             when (tab) {
                 0 -> assistant()
                 1 -> sessions()

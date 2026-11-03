@@ -100,6 +100,17 @@ fun AssistantScreen(onOpenSession: (String) -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val assistant = state.assistant
     val entries = state.assistantEntries.filterNot { it.silent }
+    // 时间线倒着排（reverseLayout）：最新那条在 index 0 = 屏幕最下面，往上翻就是往更早翻。
+    // 正着排的话内容不够一屏时全堆在顶上，输入框上面空一大块
+    val timeline = remember(entries) { entries.asReversed() }
+    // 哪几条是一天的开头：按日志原顺序算一次，别每条都 indexOfFirst
+    val dayStarts = remember(entries) {
+        buildSet {
+            entries.forEachIndexed { i, e ->
+                if (i == 0 || dayOf(entries[i - 1].at) != dayOf(e.at)) add(e.id)
+            }
+        }
+    }
     val listState = rememberLazyListState()
     var input by rememberSaveable { mutableStateOf("") }
     var sayError by remember { mutableStateOf<String?>(null) }
@@ -111,18 +122,21 @@ fun AssistantScreen(onOpenSession: (String) -> Unit = {}) {
     DisposableEffect(Unit) {
         onDispose { model.client.leaveAssistant() }
     }
-    // 新内容跟着底部（同对话页：最后一条变了就滚到底）
+    // 新内容跟着底部：只有本来就贴着底部时才滚，翻历史时不把用户拽走
     LaunchedEffect(entries.size, assistant?.reactingEntryID) {
-        if (entries.isNotEmpty()) listState.scrollToItem(entries.size - 1)
+        if (entries.isEmpty()) return@LaunchedEffect
+        if (listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
     }
-    // 快翻到顶了：再取一页更早的（得先滚开过再回来才算，不然是刚进来）
+    // 翻到顶了（= 倒排列表的最后一个 index）再取一页更早的；
+    // 内容没占满一屏时不触发，免得刚进来就空转
     LaunchedEffect(listState) {
-        var wasAway = false
         snapshotFlow {
-            listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 160
-        }.distinctUntilChanged().collect { away ->
-            if (away) wasAway = true
-            else if (wasAway) {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last != null && info.totalItemsCount > info.visibleItemsInfo.size &&
+                last.index >= info.totalItemsCount - 2
+        }.distinctUntilChanged().collect { atTop ->
+            if (atTop) {
                 val live = model.client.state.value
                 if (live.assistantHasOlder && !live.assistantLoading) model.client.loadOlderAssistant()
             }
@@ -314,54 +328,57 @@ fun AssistantScreen(onOpenSession: (String) -> Unit = {}) {
                     }
                 }
 
-                else -> LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    item {
-                        BoardStrip(
-                            running = state.assistantBoard?.running ?: 0,
-                            awaiting = state.assistantBoard?.awaiting ?: 0,
-                            channels = state.assistantChannels,
-                        )
-                    }
-                    if (state.assistantLoading) {
-                        item {
-                            Row(
-                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                horizontalArrangement = Arrangement.Center,
-                            ) {
-                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                                Spacer(Modifier.width(8.dp))
-                                Text("翻更早的…", style = MaterialTheme.typography.labelSmall)
+                else -> Column(Modifier.fillMaxSize()) {
+                    // 状态板钉在顶栏下面，不跟着时间线滚（原来它是列表第一项，
+                    // 倒排以后会跑到最底下）
+                    BoardStrip(
+                        Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp),
+                        running = state.assistantBoard?.running ?: 0,
+                        awaiting = state.assistantBoard?.awaiting ?: 0,
+                        channels = state.assistantChannels,
+                    )
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        reverseLayout = true,
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(timeline, key = { it.id }) { entry ->
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (entry.id in dayStarts) DayDivider(entry.at)
+                                EntryRow(
+                                    entry = entry,
+                                    onOpenSession = onOpenSession,
+                                    onDecide = { machineID, eventID, approved ->
+                                        scope.launch {
+                                            model.client.resolveAssistantApproval(machineID, eventID, approved)
+                                        }
+                                    },
+                                )
                             }
                         }
-                    }
-                    items(entries, key = { it.id }) { entry ->
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            if (startsDay(entries, entry)) {
-                                DayDivider(entry.at)
+                        // 倒排：这两项 index 最大 = 屏幕最上面，正是它们该在的位置
+                        if (state.assistantLoading) {
+                            item {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                ) {
+                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("翻更早的…", style = MaterialTheme.typography.labelSmall)
+                                }
                             }
-                            EntryRow(
-                                entry = entry,
-                                onOpenSession = onOpenSession,
-                                onDecide = { machineID, eventID, approved ->
-                                    scope.launch {
-                                        model.client.resolveAssistantApproval(machineID, eventID, approved)
-                                    }
-                                },
-                            )
                         }
-                    }
-                    if (entries.isEmpty()) {
-                        item {
-                            EmptyState(
-                                icon = Icons.Filled.SelfImprovement,
-                                title = "还没有动静",
-                                hint = "它在等这台机器上的会话有变化，或者等你说点什么。",
-                            )
+                        if (timeline.isEmpty() && !state.assistantLoading) {
+                            item {
+                                EmptyState(
+                                    icon = Icons.Filled.SelfImprovement,
+                                    title = "还没有动静",
+                                    hint = "它在等这台机器上的会话有变化，或者等你说点什么。",
+                                )
+                            }
                         }
                     }
                 }
@@ -592,13 +609,18 @@ private fun NoticeRow(entry: JournalEntry) {
 
 /** 顶上一行：这台几个在跑、几个等你确认、渠道在不在线 */
 @Composable
-private fun BoardStrip(running: Int, awaiting: Int, channels: List<com.integemjack.friday.proto.AssistantChannel>) {
+private fun BoardStrip(
+    modifier: Modifier = Modifier,
+    running: Int,
+    awaiting: Int,
+    channels: List<com.integemjack.friday.proto.AssistantChannel>,
+) {
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.6f))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -639,7 +661,7 @@ private fun SourceChip(source: String) {
 @Composable
 private fun DayDivider(at: String) {
     Row(
-        Modifier.fillMaxWidth().padding(top = 6.dp),
+        Modifier.fillMaxWidth().padding(top = 2.dp),
         horizontalArrangement = Arrangement.Center,
     ) {
         Text(
@@ -677,12 +699,6 @@ private fun dayOf(iso: String): String = runCatching {
 private fun directTarget(input: String): String? {
     val match = Regex("^#([0-9a-fA-F]{3,32})(?=[\\s:：,，]|$)").find(input.trim()) ?: return null
     return match.groupValues.getOrNull(1)
-}
-
-private fun startsDay(entries: List<JournalEntry>, entry: JournalEntry): Boolean {
-    val index = entries.indexOfFirst { it.id == entry.id }
-    if (index <= 0) return true
-    return dayOf(entries[index - 1].at) != dayOf(entry.at)
 }
 
 @Composable
