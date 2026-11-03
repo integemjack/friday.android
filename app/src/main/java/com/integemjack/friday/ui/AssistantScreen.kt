@@ -112,7 +112,6 @@ fun AssistantScreen(onOpenSession: (String) -> Unit = {}) {
         }
     }
     val listState = rememberLazyListState()
-    var input by rememberSaveable { mutableStateOf("") }
     var sayError by remember { mutableStateOf<String?>(null) }
 
     // 进这页才订助手（assistant.subscribe），离开退订：日志和状态板的事件量不小
@@ -188,100 +187,6 @@ fun AssistantScreen(onOpenSession: (String) -> Unit = {}) {
                     }
                 },
             )
-        },
-        bottomBar = {
-            // 和对话页同一个坑：没键盘时也要让出系统导航条，不然输入框压在导航条下面
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-            ) {
-                val speaking = assistant?.speaking == true
-                val direct = directTarget(input)
-                if (direct != null) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 16.dp, top = 6.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.1f))
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Filled.Bolt,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "这条直接发给 #$direct，不经过助手",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.tertiary,
-                        )
-                    }
-                }
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 10.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(24.dp)),
-                        placeholder = {
-                            Text(
-                                if (speaking) "想插一句？（空着点右边是打断）" else "跟助手说点什么…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        },
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        shape = RoundedCornerShape(24.dp),
-                        maxLines = 4,
-                        enabled = state.connected,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                        ),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    if (speaking && input.isBlank()) {
-                        FilledIconButton(
-                            onClick = { model.client.stopAssistant() },
-                            modifier = Modifier.size(44.dp),
-                            colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer,
-                                contentColor = MaterialTheme.colorScheme.error,
-                            ),
-                        ) {
-                            Icon(Icons.Filled.Stop, contentDescription = "打断", modifier = Modifier.size(20.dp))
-                        }
-                    } else {
-                        FilledIconButton(
-                            enabled = state.connected && input.isNotBlank(),
-                            onClick = {
-                                val text = input.trim()
-                                input = ""
-                                scope.launch {
-                                    runCatching { model.client.sayToAssistant(text) }
-                                        .onFailure { sayError = it.message }
-                                }
-                            },
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
-                        }
-                    }
-                }
-            }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
@@ -716,5 +621,125 @@ private fun receiptVisual(text: String, status: String, level: String): Pair<Ima
             Icons.Filled.PlayCircle to scheme.primary
         level == "warn" -> Icons.Filled.ErrorOutline to scheme.tertiary
         else -> Icons.Filled.Bolt to scheme.onSurfaceVariant
+    }
+}
+
+// MARK: dock 上半截：跟助手说话
+
+/**
+ * 助手页底部 dock 的输入框那一行。由 [HomeScaffold] 放进 dock（和 tab 行同一个容器、
+ * 同一条顶边、一起让位导航条和键盘），所以这里不画背景、也不自己算 inset。
+ *
+ * 输入框的文字状态由调用方（AppRoot）拿着：切到别的 tab 再回来，打了一半的话还在。
+ */
+@Composable
+fun AssistantInputBar(
+    input: String,
+    onInput: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val model = LocalAppModel.current
+    val state by model.client.stateFlow.collectAsState()
+    val scope = rememberCoroutineScope()
+    var sayError by remember { mutableStateOf<String?>(null) }
+    val speaking = state.assistant?.speaking == true
+    val direct = directTarget(input)
+
+    Column(modifier.fillMaxWidth()) {
+        // 「#短号 …」= 这条不经大脑、原样转给那段会话，先说清楚再发
+        if (direct != null) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, top = 7.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f))
+                    .padding(horizontal = 9.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.Bolt,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(13.dp),
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    "这条直接发给 #$direct，不经过助手",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInput,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(22.dp)),
+                placeholder = {
+                    Text(
+                        if (speaking) "想插一句？（空着点右边是打断）" else "跟助手说点什么…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                textStyle = MaterialTheme.typography.bodyMedium,
+                shape = RoundedCornerShape(22.dp),
+                maxLines = 4,
+                enabled = state.connected,
+                colors = OutlinedTextFieldDefaults.colors(
+                    // 比 dock 亮一档，看着是「嵌在这块底栏里」而不是浮在上面
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+                ),
+            )
+            Spacer(Modifier.width(6.dp))
+            if (speaking && input.isBlank()) {
+                FilledIconButton(
+                    onClick = { model.client.stopAssistant() },
+                    modifier = Modifier.size(44.dp),
+                    colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Icon(Icons.Filled.Stop, contentDescription = "打断", modifier = Modifier.size(20.dp))
+                }
+            } else {
+                FilledIconButton(
+                    enabled = state.connected && input.isNotBlank(),
+                    onClick = {
+                        val text = input.trim()
+                        onInput("")
+                        scope.launch {
+                            runCatching { model.client.sayToAssistant(text) }
+                                .onFailure { sayError = it.message }
+                        }
+                    },
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送", modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+    }
+
+    if (sayError != null) {
+        AlertDialog(
+            onDismissRequest = { sayError = null },
+            title = { Text("没送出去") },
+            text = { Text(sayError ?: "") },
+            confirmButton = { TextButton(onClick = { sayError = null }) { Text("知道了") } },
+        )
     }
 }
