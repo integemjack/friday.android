@@ -16,11 +16,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -189,7 +193,13 @@ fun ChatScreen(onBack: () -> Unit) {
             )
         },
         bottomBar = {
-            Column(Modifier.fillMaxWidth().imePadding()) {
+            // 输入栏贴在屏幕最底部：没键盘时要让出系统导航条（不然输入框被压在导航条下面、点不到），
+            // 键盘弹起时取键盘高度。safeDrawing 的底部就是 max(导航条, 键盘)，两者不会叠着算。
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+            ) {
                 runtime?.let { rt -> QueueBar(rt) }
                 if (runtime?.canRetry == true && runtime?.generating != true) {
                     Row(
