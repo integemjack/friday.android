@@ -1,5 +1,6 @@
 package com.integemjack.friday.proto
 
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -325,7 +326,8 @@ class ProtoLogicTest {
             ),
         )
         assertNotNull(patched)
-        val tool = blockTool(patched!![0])
+        assertEquals(1, patched!!.size)
+        val tool = blockTool(patched[0])
         assertNotNull(tool)
         assertEquals("succeeded", tool!!.status)
         assertEquals("是只猫", tool.result)
@@ -334,6 +336,50 @@ class ProtoLogicTest {
         assertEquals("子 Agent 说了一句", blockText(tool.transcript[0]))
         assertEquals(1, tool.media.size)
         assertEquals("a.png", tool.media[0].fileName)
+    }
+
+    private fun thinking(id: String, text: String) = MessageBlock(id, obj("""{"thinking":{"_0":${Json.encodeToString(String.serializer(), text)}}}"""))
+    private fun text(id: String, text: String) = MessageBlock(id, obj("""{"text":{"_0":${Json.encodeToString(String.serializer(), text)}}}"""))
+
+    @Test
+    fun `流式更新的思考块原地换掉、不越补越多`() {
+        // 服务端每 0.1 秒把正在写的思考块整块 set 一次（ids 不变不带）：以前每个补丁都新旧各留一份、翻倍
+        var blocks = listOf(text("s1", "先看看"), thinking("t1", "想"))
+        for (i in 1..30) {
+            blocks = applyBlocks(blocks, BlocksPatch(ids = null, set = listOf(thinking("t1", "想" + "。".repeat(i))), tools = null))!!
+        }
+        assertEquals(listOf("s1", "t1"), blocks.map { it.id })
+        assertEquals("想" + "。".repeat(30), blockThinking(blocks[1]))
+    }
+
+    @Test
+    fun `补丁新加的块接得上（不用去拉整条）`() {
+        val blocks = listOf(thinking("t1", "想好了"))
+        val patched = applyBlocks(
+            blocks,
+            BlocksPatch(ids = listOf("t1", "s1", "t2"), set = listOf(text("s1", "这样做"), thinking("t2", "再想")), tools = null),
+        )
+        assertNotNull(patched)
+        assertEquals(listOf("t1", "s1", "t2"), patched!!.map { it.id })
+        assertEquals("这样做", blockText(patched[1]))
+    }
+
+    @Test
+    fun `子 Agent 运行记录里的思考块原地换掉`() {
+        val tool = MessageBlock(
+            "x1",
+            obj("""{"tool":{"_0":{"id":"x1","name":"agent","arguments":"{}","status":"running","result":"",
+                "transcript":[{"id":"t1","kind":{"thinking":{"_0":"想"}}}]}}}"""),
+        )
+        var blocks = listOf(tool)
+        for (i in 1..10) {
+            val transcript = BlocksPatch(ids = null, set = listOf(thinking("t1", "想$i")), tools = null)
+            blocks = applyBlocks(blocks, BlocksPatch(ids = null, set = null, tools = listOf(ToolPatch("x1", null, transcript))))!!
+        }
+        assertEquals(1, blocks.size)
+        val event = blockTool(blocks[0])!!
+        assertEquals(listOf("t1"), event.transcript.map { it.id })
+        assertEquals("想10", blockThinking(event.transcript[0]))
     }
 
     @Test

@@ -532,6 +532,9 @@ class FridayClient(
             val version = params.long("version") ?: return
             val local = chat.versions[messageID]
             val existing = chat.nodes[messageID]
+            // 版本号全局递增：不比手里的新 = 过时的（整条拉回来之前就在路上的那些），直接丢。
+            // 不丢的话每个过时的补丁都对不上、各拉一次整条，拉的这一会儿又压一批过时的，越拉越多（同 Qt 端 m_resyncing）
+            if (local != null && version <= local) return
             if (existing == null || (base != null && local != null && local != base)) {
                 fetchWholeMessage(convoId, messageID)
                 return
@@ -552,6 +555,9 @@ class FridayClient(
         } else {
             val message = (params["message"] as? JsonObject)?.let { ChatMessage.fromJson(it) } ?: return
             val version = params.long("version")
+            // 整条拉回来的已经比它新：这条是之前就在路上的旧快照，别拿它盖掉
+            val local = chat.versions[message.id]
+            if (version != null && local != null && version < local) return
             updateChat(convoId) {
                 val versions = if (version != null) it.versions + (message.id to version) else it.versions
                 // 新消息先出现在 conversation 事件里，兜底也挂进 order

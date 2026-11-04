@@ -90,14 +90,13 @@ fun applyBlocks(blocks: List<MessageBlock>, patch: BlocksPatch): List<MessageBlo
 
     patch.ids?.let { ids -> order = ids.toMutableList() }
 
-    val result = mutableListOf<MessageBlock>()
+    // 每个 id 只出一块：换掉的用新的，没换的用原来的，两边都没有 = 打不上。
+    // （以前这里 `return@let` 只跳出了 let、没跳过下面那行：换掉的块新旧各留一份——流式更新的思考块
+    // 每来一个补丁就翻一倍，几秒就几十万块把 App 撑爆；新加的块又在原来的里找不到，次次判打不上去拉整条）
+    val result = ArrayList<MessageBlock>(order.size)
     for (id in order) {
-        replaced[id]?.let {
-            result.add(it)
-            return@let
-        }
-        val at = index[id] ?: return null
-        result.add(blocks[at])
+        val block = replaced[id] ?: index[id]?.let { blocks[it] } ?: return null
+        result.add(block)
     }
     return result
 }
