@@ -30,6 +30,12 @@
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <!-- 登录页：看这台手机装没装 SChat、它认不认 schat://login/<token>（「通过 SChat 登录」） -->
+        <package android:name="com.ireoo.schat" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="schat" />
+        </intent>
     </queries>
 
     <application

@@ -39,6 +39,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,7 +63,7 @@ import kotlinx.coroutines.launch
 
 /** 设置：SChat 账号与远程 Friday、连接状态、版本与更新 */
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(onSwitchBot: () -> Unit = {}) {
     val openDrawer = LocalOpenDrawer.current
     Column(
         Modifier
@@ -77,7 +78,7 @@ fun SettingsScreen() {
             subtitle = "账号、助手、更新与本机缓存",
             onOpenDrawer = openDrawer,
         )
-        SchatCard()
+        AccountCard(onSwitchBot)
         BackgroundCard()
         AssistantCard()
         UpdateCard()
@@ -89,7 +90,7 @@ fun SettingsScreen() {
 
 /** 输入框统一样式：圆角 + 浅底 */
 @Composable
-private fun FridayField(
+internal fun FridayField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
@@ -256,19 +257,16 @@ private fun requestUnrestricted(context: android.content.Context) {
 private fun dirSize(dir: java.io.File): Long =
     dir.listFiles()?.sumOf { if (it.isDirectory) dirSize(it) else it.length() } ?: 0L
 
+/**
+ * 账号：登录 / 选机器人都在单独的页面（LoginScreen / BotPickerScreen），这里只看现在的状态，
+ * 能做的就两件：切换 bot、退出登录。
+ */
 @Composable
-private fun SchatCard() {
+private fun AccountCard(onSwitchBot: () -> Unit) {
     val model = LocalAppModel.current
     val schatState by model.schat.state.collectAsState()
     val conn by model.client.stateFlow.collectAsState()
-    val saved = remember { model.schatStore.load() }
-    var server by remember { mutableStateOf(saved?.server?.ifEmpty { null } ?: SchatService.DEFAULT_SERVER) }
-    var username by remember { mutableStateOf(saved?.username.orEmpty()) }
-    var password by remember { mutableStateOf("") }
-    var serverPassword by remember { mutableStateOf(saved?.serverPassword.orEmpty()) }
-    var showAdvanced by remember { mutableStateOf(false) }
-    var busy by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    val extra = LocalFridayExtra.current
 
     FridayCard {
         SectionTitle(
@@ -276,216 +274,60 @@ private fun SchatCard() {
             title = "SChat 账号",
             trailing = {
                 when (schatState.phase) {
-                    SchatService.Phase.Online -> Chip("在线", color = LocalFridayExtra.current.success)
-                    SchatService.Phase.Failed -> Chip("出错", color = MaterialTheme.colorScheme.error)
+                    SchatService.Phase.Online -> Chip("在线", color = extra.success)
+                    SchatService.Phase.Failed -> Chip("没连上", color = MaterialTheme.colorScheme.error)
                     SchatService.Phase.LoggingIn, SchatService.Phase.Connecting ->
                         Chip("连接中", color = MaterialTheme.colorScheme.tertiary)
                     else -> Chip("未登录", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
         )
-        Spacer(Modifier.height(8.dp))
-        when (schatState.phase) {
-            SchatService.Phase.NotLoggedIn ->
-                Text(
-                    "未登录：登录 SChat 账号后，就能呼叫好友里的远程 Friday",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            SchatService.Phase.LoggingIn ->
-                Text(schatState.status.ifEmpty { "登录中…" }, style = MaterialTheme.typography.bodySmall)
-            SchatService.Phase.Connecting ->
-                Text(schatState.status.ifEmpty { "正在连聊天服务器…" }, style = MaterialTheme.typography.bodySmall)
-            SchatService.Phase.Online ->
-                Text(
-                    "已连上 · ${schatState.username}（用户 ${schatState.userId}）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = LocalFridayExtra.current.success,
-                )
-            SchatService.Phase.Failed ->
-                Text(
-                    "SChat ${schatState.status}".trim(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-        }
-        schatState.error?.let {
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        }
-
-        if (!schatState.hasSession) {
-            Spacer(Modifier.height(4.dp))
-            FridayField(server, { server = it }, "服务器（IP:端口，可带 https://）")
-            FridayField(username, { username = it }, "账号（用户名 / 手机号）")
-            FridayField(
-                password, { password = it }, "密码",
-                options = KeyboardOptions(keyboardType = KeyboardType.Password), password = true,
-            )
-            if (showAdvanced) {
-                FridayField(
-                    serverPassword, { serverPassword = it }, "服务器密码（私有服务器才要填）",
-                    options = KeyboardOptions(keyboardType = KeyboardType.Password), password = true,
-                )
-            } else {
-                TextButton(onClick = { showAdvanced = true }) { Text("＋ 私有服务器密码") }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    enabled = server.isNotBlank() && username.isNotBlank() && password.isNotEmpty() && !busy,
-                    onClick = {
-                        busy = true
-                        scope.launch {
-                            model.schat.login(server.trim(), username.trim(), password, serverPassword.trim())
-                            busy = false
-                        }
-                    },
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 24.dp, vertical = 10.dp),
-                ) {
-                    if (busy) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text("登录")
-                }
-            }
-        } else {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "服务器：${schatState.server.ifEmpty { saved?.server.orEmpty() }} · 账号：${schatState.username.ifEmpty { saved?.username.orEmpty() }}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    enabled = schatState.phase != SchatService.Phase.Online,
-                    onClick = { model.schat.reconnectNow() },
-                ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("重连聊天服务器")
-                }
-                OutlinedButton(onClick = { model.logout() }) { Text("退出登录") }
-            }
-
-            // 远程 Friday：好友里的机器人
-            Spacer(Modifier.height(6.dp))
-            SectionTitle(icon = Icons.Filled.SmartToy, title = "远程 Friday（SChat 好友里的机器人）")
-            when {
-                schatState.bots.isEmpty() ->
-                    Text(
-                        "还没有机器人。在那台电脑上把 Friday 加到 SChat 里、并和这个账号成为好友，再回来刷新。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                else -> schatState.bots.forEach { bot ->
-                    val selected = bot.id == schatState.lastBotId
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(
-                                if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                                else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.4f)
-                            )
-                            .clickable { model.connectBot(bot.id, bot.name) }
-                            .padding(horizontal = 10.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Filled.SmartToy,
-                            contentDescription = null,
-                            tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(9.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                bot.name.ifBlank { "机器人 ${bot.id}" },
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                "#${bot.id}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        if (selected) Chip("当前", color = MaterialTheme.colorScheme.primary)
-                    }
-                    Spacer(Modifier.height(6.dp))
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { scope.launch { model.schat.loadBots() } }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("刷新列表")
-                }
-                val botId = schatState.lastBotId
-                if (botId > 0) {
-                    OutlinedButton(
-                        onClick = {
-                            model.connectBot(
-                                botId,
-                                schatState.bots.firstOrNull { it.id == botId }?.name ?: schatState.lastBotName,
-                            )
-                        },
-                    ) { Text("重新拨号") }
-                }
-            }
-        }
-
-        // 工作通道状态
-        Spacer(Modifier.height(6.dp))
-        val connLabel = when (val c = conn.conn) {
-            is ConnState.Connected ->
-                "工作通道已连上：${c.server.displayName} · ${c.server.user}@${c.server.hostname}（${c.server.platform}）"
-            is ConnState.Connecting -> "呼叫中：${c.message}"
-            is ConnState.Failed -> "通道断开：${c.message}"
-            else -> "工作通道未连接"
-        }
-        val connTint = when (conn.conn) {
-            is ConnState.Connected -> LocalFridayExtra.current.success
-            is ConnState.Failed -> MaterialTheme.colorScheme.error
-            else -> MaterialTheme.colorScheme.onSurfaceVariant
-        }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .background(connTint.copy(alpha = 0.10f))
-                .padding(horizontal = 10.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Box(Modifier.padding(top = 5.dp)) {
-                Dot(connTint, size = 7.dp)
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                connLabel,
-                style = MaterialTheme.typography.bodySmall,
-                color = connTint,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        if (conn.connected) {
-            Spacer(Modifier.height(6.dp))
-            OutlinedButton(onClick = { model.client.disconnect() }) { Text("断开工作通道") }
-        }
         Spacer(Modifier.height(6.dp))
         Text(
-            "和工作台一样走 SChat 的 WebRTC 工作通道（P2P + TURN 中继）：要连的那台机器上装着 Friday 桌面端，" +
-                "并在 SChat 里把它的机器人加为好友。",
+            "${schatState.username.ifBlank { "用户 ${schatState.userId}" }} · " +
+                schatState.server.removePrefix("https://").removePrefix("http://"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        schatState.phase.let { phase ->
-            if (phase == SchatService.Phase.Failed && saved != null) {
-                TextButton(onClick = { model.schat.resetFingerprintAndReconnect() }) {
-                    Text("服务器证书换过？点这里重记证书指纹")
-                }
+        if (schatState.phase == SchatService.Phase.Failed) {
+            (schatState.error ?: schatState.status.ifBlank { null })?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
+            TextButton(onClick = { model.schat.resetFingerprintAndReconnect() }) {
+                Text("服务器证书换过？点这里重记证书指纹")
+            }
+        }
+
+        // 现在连的那台机器人 + 工作通道
+        Spacer(Modifier.height(10.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MonogramBadge(schatState.lastBotName.ifBlank { "?" }, size = 36.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    schatState.lastBotName.ifBlank { "还没选机器人" },
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                val (line, tint) = when (val c = conn.conn) {
+                    is ConnState.Connected -> "已连上 · ${c.server.displayName} · ${c.server.hostname}" to extra.success
+                    is ConnState.Connecting -> "正在连…" to MaterialTheme.colorScheme.tertiary
+                    is ConnState.Failed -> c.message to MaterialTheme.colorScheme.error
+                    else -> "工作通道没连" to MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Text(line, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 2)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FilledTonalButton(onClick = onSwitchBot) { Text("切换 bot") }
+            OutlinedButton(onClick = { model.logout() }) { Text("退出登录") }
         }
     }
 }

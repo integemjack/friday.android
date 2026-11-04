@@ -838,4 +838,74 @@ class UiRenderTest {
         again.clear()
         assertEquals("", ChatDrafts(store).of("C1").input)
     }
+
+    // MARK: 登录页 / 选机器人 / 设置里的账号
+
+    @Test
+    fun `没登录时一打开就是登录页，没装 SChat 时给二维码，其他方式折着`() {
+        // 登录页 0.6 秒后会去建扫码会话（真网络）：测试里时钟不走，只看排版
+        compose.mainClock.autoAdvance = false
+        render(AppModel(app)) { com.integemjack.friday.AppRoot(kotlinx.coroutines.flow.MutableStateFlow(null)) }
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithText("登录 Friday").assertExists()
+        compose.onNodeWithText("打开手机上的 SChat → 扫一扫，扫这个码").assertExists()
+        compose.onNodeWithText("其他方式").assertExists()
+        assertNoText("通过 SChat 登录")
+        // 主框架（侧栏、助手页）不在
+        assertNoDescription("打开侧边栏")
+    }
+
+    @Test
+    fun `二维码出来以后写着多久过期，扫到了提示在手机上确认`() {
+        var qr by mutableStateOf<com.integemjack.friday.schat.SchatService.QrLogin>(
+            com.integemjack.friday.schat.SchatService.QrLogin.Waiting("tok123", "https://s", System.currentTimeMillis() + 299_000)
+        )
+        render(modelWith(FridayState())) { QrPanel(qr, onRefresh = {}) }
+        compose.onNodeWithText("后过期", substring = true).assertExists()
+        qr = (qr as com.integemjack.friday.schat.SchatService.QrLogin.Waiting).copy(scanned = true)
+        compose.waitForIdle()
+        compose.onNodeWithText("已扫描，请在手机上点「确认登录」").assertExists()
+        qr = com.integemjack.friday.schat.SchatService.QrLogin.Expired
+        compose.waitForIdle()
+        compose.onNodeWithText("重新生成二维码").assertExists()
+        compose.onNodeWithText("二维码过期了，点一下重新生成").assertExists()
+    }
+
+    @Test
+    fun `二维码里写的是 SChat 扫一扫认的 SCSH login 串`() {
+        val waiting = com.integemjack.friday.schat.SchatService.QrLogin.Waiting("AbC_-1", "https://s", 0)
+        assertEquals("SCSH:1:login:AbC_-1", waiting.payload)
+    }
+
+    @Test
+    fun `看得出这台手机装没装 SChat、认不认通过 SChat 登录的链接`() {
+        val shadow = org.robolectric.Shadows.shadowOf(app.packageManager)
+        assertEquals(SchatApp.Missing, schatApp(app))
+
+        shadow.installPackage(android.content.pm.PackageInfo().apply { packageName = SCHAT_PACKAGE })
+        assertEquals(SchatApp.Outdated, schatApp(app))
+
+        val probe = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("schat://login/probe"))
+            .setPackage(SCHAT_PACKAGE)
+        shadow.addResolveInfoForIntent(probe, android.content.pm.ResolveInfo().apply {
+            activityInfo = android.content.pm.ActivityInfo().apply { packageName = SCHAT_PACKAGE; name = "MainActivity" }
+        })
+        assertEquals(SchatApp.Ready, schatApp(app))
+
+        val link = schatLoginIntent("tok", "https://47.100.98.3:2012")
+        assertEquals("schat://login/tok?s=https%3A%2F%2F47.100.98.3%3A2012", link.dataString)
+        assertEquals(SCHAT_PACKAGE, link.`package`)
+    }
+
+    @Test
+    fun `设置里账号那块只有切换 bot 和退出登录`() {
+        compose.mainClock.autoAdvance = false
+        render(modelWith(FridayState(conn = connected))) { SettingsScreen() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithText("切换 bot").assertExists()
+        compose.onNodeWithText("退出登录").assertExists()
+        assertNoText("账号（用户名 / 手机号）")
+        assertNoText("刷新列表")
+        assertNoText("断开工作通道")
+    }
 }

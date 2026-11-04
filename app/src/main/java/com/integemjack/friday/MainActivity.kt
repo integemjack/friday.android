@@ -96,6 +96,35 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     val model = LocalAppModel.current
+    // 没登录：先是登录页；登录了还没选机器人（或者在设置里点了「切换 bot」）：选机器人那一页；
+    // 都有了才是主框架。演示数据（debug 包截图用）不走这道门
+    val schat by model.schat.state.collectAsState()
+    var switchingBot by rememberSaveable { mutableStateOf(false) }
+    if (!Demo.active) {
+        if (!schat.hasSession) {
+            com.integemjack.friday.ui.LoginScreen()
+            return
+        }
+        if (schat.lastBotId <= 0L) {
+            com.integemjack.friday.ui.BotPickerScreen(onPicked = { switchingBot = false })
+            return
+        }
+    }
+    MainFrame(tabRequest, onSwitchBot = { switchingBot = true })
+    // 设置里点「切换 bot」：盖在主框架上面（主框架留着，返回时还在设置页）
+    if (switchingBot && !Demo.active) {
+        BackHandler { switchingBot = false }
+        com.integemjack.friday.ui.BotPickerScreen(
+            onPicked = { switchingBot = false },
+            onBack = { switchingBot = false },
+        )
+    }
+}
+
+/** 主框架：登录了、选好机器人之后的那一套（助手 / 会话 / 活动 / 设置 + 侧栏） */
+@Composable
+private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Unit) {
+    val model = LocalAppModel.current
     // 只盯「开着哪段会话」：整份 state 每个流式字都会变，收它会让整个外壳跟着重组
     val openConversationId by remember(model) {
         model.client.stateFlow.map { it.openConversationId }.distinctUntilChanged()
@@ -203,7 +232,7 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
             HomeTabs.ASSISTANT -> AssistantScreen(onOpenSession = ::openConversation)
             HomeTabs.CHAT -> ChatScreen()
             HomeTabs.ACTIVITY -> ActivityScreen(onOpen = { tab = HomeTabs.CHAT })
-            else -> SettingsScreen()
+            else -> SettingsScreen(onSwitchBot = onSwitchBot)
         }
     }
     // 跟助手的通话盖在整个界面上（没在通话时什么都不画）

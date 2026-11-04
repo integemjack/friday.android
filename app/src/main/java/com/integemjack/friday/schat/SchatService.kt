@@ -158,25 +158,163 @@ class SchatService(
                 botId = if (sameServer) stored?.botId ?: 0 else 0,
                 botName = if (sameServer) stored?.botName.orEmpty() else "",
             )
-            session = fresh
-            store.save(fresh)
-            _state.value = _state.value.copy(
-                phase = Phase.Connecting,
-                status = "登录成功，连接聊天服务器…",
-                error = null,
-                userId = fresh.userId,
-                hasSession = true,
-                lastBotId = fresh.botId,
-                lastBotName = fresh.botName,
-            )
-            runConnect()
+            adopt(fresh)
         } catch (error: Throwable) {
             val message = error.message ?: "登录失败"
             _state.value = _state.value.copy(phase = Phase.Failed, status = "", error = message)
         }
     }
 
+    /**
+     * 拿到一套登录态之后（账号密码 / 扫码 / 通过 SChat）：存下来、连 schat-ws。
+     * 连 ws 放在服务自己的作用域里（connectWs）：登录页在 hasSession 一变真就离开界面，
+     * 它的协程会被取消——要是在调用方的协程里连，刚登上就被掐断（「StandaloneCoroutine was cancelled」）
+     */
+    private fun adopt(fresh: SchatSession) {
+        session = fresh
+        store.save(fresh)
+        _state.value = _state.value.copy(
+            phase = Phase.Connecting,
+            status = "登录成功，连接聊天服务器…",
+            error = null,
+            server = fresh.server,
+            username = fresh.username,
+            serverPassword = fresh.serverPassword,
+            userId = fresh.userId,
+            hasSession = true,
+            lastBotId = fresh.botId,
+            lastBotName = fresh.botName,
+        )
+        connectWs()
+    }
+
+    // MARK: 扫码登录 / 通过 SChat 登录（同一套 login-sessions：码面 SCSH:1:login:<token>）
+
+    /** 扫码登录走到哪了（登录页照着画） */
+    sealed interface QrLogin {
+        data object Idle : QrLogin
+        data object Starting : QrLogin
+
+        /** 码出来了，在等手机扫 / 等手机上点确认（[scanned]） */
+        data class Waiting(
+            val token: String,
+            val server: String,
+            val expiresAt: Long,
+            val scanned: Boolean = false,
+        ) : QrLogin {
+            /** 二维码里写的（SChat 扫一扫认这一串） */
+            val payload: String get() = "SCSH:1:login:$token"
+        }
+
+        data object Expired : QrLogin
+        data object Denied : QrLogin
+
+        /** [unsupported]：这个聊天服务器没有扫码登录（老版本），只能账号密码登录 */
+        data class Failed(val message: String, val unsupported: Boolean = false) : QrLogin
+    }
+
+    private val _qrLogin = MutableStateFlow<QrLogin>(QrLogin.Idle)
+    val qrLogin: StateFlow<QrLogin> = _qrLogin.asStateFlow()
+    private var qrJob: Job? = null
+
+    /**
+     * 开一次扫码登录：先问服务器支不支持（/server-info 的 qrLogin），建会话出码，每 2 秒问一次，
+     * 手机上确认了就拿到和账号密码登录同型的登录态，走同一条「登录成功」的路。
+     * 同一台手机上装着 SChat 时，登录页把同一个 token 经 `schat://login/<token>` 交给 SChat 去确认。
+     */
+    fun startQrLogin(serverRaw: String, serverPassword: String) {
+        qrJob?.cancel()
+        qrJob = scope.launch { runQrLogin(normalizeServer(serverRaw), serverPassword) }
+    }
+
+    fun cancelQrLogin() {
+        qrJob?.cancel()
+        qrJob = null
+        _qrLogin.value = QrLogin.Idle
+    }
+
+    private suspend fun runQrLogin(server: String, serverPassword: String) {
+        if (server.isEmpty()) {
+            _qrLogin.value = QrLogin.Failed("先填聊天服务器的地址")
+            return
+        }
+        _qrLogin.value = QrLogin.Starting
+        val stored = store.load()
+        val sameServer = stored != null && stored.server == server
+        val deviceId = stored?.takeIf { sameServer }?.deviceId?.ifEmpty { null } ?: UUID.randomUUID().toString()
+        val known = stored?.takeIf { sameServer }?.fingerprint?.ifEmpty { null }
+        val password = serverPassword.ifBlank { null }
+        try {
+            val (info, seen) = SchatHttp.serverInfo(server, password, known)
+            if (info.bool("qrLogin") != true) {
+                _qrLogin.value = QrLogin.Failed("这个聊天服务器还不支持扫码登录，用账号密码登录", unsupported = true)
+                return
+            }
+            // 证书指纹第一次见就记下（TOFU），之后这一轮都按它认
+            val pinned = known ?: seen.ifEmpty { null }
+            val (session, _) = SchatHttp.createLoginSession(server, deviceId, deviceName, password, pinned)
+            _qrLogin.value = QrLogin.Waiting(session.token, server, session.expiresAt)
+            while (true) {
+                delay(session.intervalMs)
+                if (System.currentTimeMillis() > session.expiresAt + 5_000) {
+                    _qrLogin.value = QrLogin.Expired
+                    return
+                }
+                val poll = try {
+                    SchatHttp.pollLoginSession(server, session.token, deviceId, password, pinned)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    continue // 网络抖了一下：接着问，码过期了上面会收尾
+                }
+                when (poll) {
+                    SchatHttp.LoginPoll.Pending -> Unit
+                    SchatHttp.LoginPoll.Scanned -> (_qrLogin.value as? QrLogin.Waiting)?.let {
+                        _qrLogin.value = it.copy(scanned = true)
+                    }
+                    SchatHttp.LoginPoll.Denied -> {
+                        _qrLogin.value = QrLogin.Denied
+                        return
+                    }
+                    SchatHttp.LoginPoll.Expired -> {
+                        _qrLogin.value = QrLogin.Expired
+                        return
+                    }
+                    is SchatHttp.LoginPoll.Approved -> {
+                        val payload = poll.session
+                        val name = SchatHttp.me(server, payload.token, pinned) ?: "用户 ${payload.userId}"
+                        // 同一台服务器、同一个账号再登：记着的那台机器人留着；换了账号就重新选
+                        val keepBot = sameServer && stored?.userId == payload.userId
+                        adopt(
+                            SchatSession(
+                                server = server,
+                                username = name,
+                                password = "", // 扫码登录没有密码：凭据过期靠 refreshToken 续
+                                serverPassword = serverPassword,
+                                userId = payload.userId,
+                                token = payload.token,
+                                refreshToken = payload.refreshToken,
+                                fingerprint = pinned.orEmpty(),
+                                deviceId = deviceId,
+                                deviceName = deviceName,
+                                botId = if (keepBot) stored?.botId ?: 0 else 0,
+                                botName = if (keepBot) stored?.botName.orEmpty() else "",
+                            )
+                        )
+                        _qrLogin.value = QrLogin.Idle
+                        return
+                    }
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (error: Throwable) {
+            _qrLogin.value = QrLogin.Failed(error.message ?: "扫码登录失败")
+        }
+    }
+
     fun logout() {
+        cancelQrLogin()
         wantedOnline = false
         retryJob?.cancel()
         retryJob = null
@@ -187,9 +325,11 @@ class SchatService(
         previous?.close()
         session = null
         iceCache = null
-        store.clear()
+        // 只忘掉这次登录；服务器地址留着（私有服务器退出再登不用重填，登录页的扫码也去对的服务器）
+        store.forgetLogin()
         routes.forEach { it.onSignalingOffline("已退出登录") }
-        _state.value = State()
+        val kept = _state.value
+        _state.value = State(server = kept.server, serverPassword = kept.serverPassword)
     }
 
     /** 手动重连（比如网络换了 / 被顶掉之后用户自己点） */

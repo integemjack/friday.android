@@ -90,6 +90,22 @@ class SchatStore(context: Context) {
         prefs.edit().clear().apply()
     }
 
+    /**
+     * 退出登录：凭据、密码、账号、选的机器人都删掉；聊天服务器地址（和它的服务器密码、记下的证书指纹、
+     * 这台设备的 id）留着——私有服务器的人退出再登，不用重新填地址，登录页的扫码也直接去对的服务器
+     */
+    fun forgetLogin() {
+        prefs.edit()
+            .remove(KEY_USERNAME)
+            .remove(KEY_PASSWORD)
+            .remove(KEY_USER_ID)
+            .remove(KEY_TOKEN)
+            .remove(KEY_REFRESH)
+            .remove(KEY_BOT_ID)
+            .remove(KEY_BOT_NAME)
+            .apply()
+    }
+
     // MARK: Android Keystore AES/GCM
 
     private fun key(): SecretKey {

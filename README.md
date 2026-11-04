@@ -3,6 +3,11 @@
 远程 [Friday](https://github.com/integemjack/friday) 的 Android 客户端：登录 SChat 账号，经 `schat-ws` 信令呼自己的机器人，
 在 WebRTC DataChannel（`friday-work`）上跑 JSON-RPC。
 
+- **登录**：没登录时一打开就是登录页。这台手机装着（认 `schat://login/<token>` 的）SChat → 「通过 SChat 登录」，
+  跳到 SChat 点确认；没装 → 二维码 `SCSH:1:login:<token>`，用另一台手机上的 SChat 扫一扫、确认
+  （两条都是 SChat 的扫码登录 `login-sessions`，凭据在这边领取时才签发）；折着的「其他方式」里有账号密码登录、
+  改聊天服务器。登录后选一台 SChat 好友里的 Friday 机器人连上。设置里账号那块只有「切换 bot」「退出登录」；
+  退出只忘掉登录，聊天服务器地址留着
 - **会话**：看远程的全部会话、新建会话、发消息、停止；流式显示回复（含 thinking 折叠块、工具卡片、子 Agent 运行记录）
   - 长按会话：置顶、重命名、删掉；消息有多个分支时左右切换（`runner.selectBranch`）
   - 长按消息：复制文本 / 复制工具输出；上一轮失败时一键重试（`runner.retry`）
@@ -73,7 +78,7 @@ JSON-RPC 2.0（协议见 `Friday/qt/docs/REMOTE.md` §2）。
 ```bash
 ./gradlew assembleDebug    # 调试包
 ./gradlew assembleRelease  # 正式包（需 FRIDAY_KEYSTORE_* 环境变量，缺省退化为未签名）
-./gradlew testDebugUnitTest  # 单元 + 界面测试（105 个，JVM 上跑，不用设备）
+./gradlew testDebugUnitTest  # 单元 + 界面测试（110 个，JVM 上跑，不用设备）
 ./gradlew lintDebug        # lint（CI 闸门）
 bash tools/test-bump-version.sh   # bump 逻辑测试
 ```

@@ -213,6 +213,102 @@ object SchatHttp {
         return parseSession(result.body) to result.fingerprint
     }
 
+    // MARK: 扫码登录（Secret-Chat docs/qr_login_plan.md、cross_end_contract_events.md「扫码登录 login-sessions REST」）
+
+    /** GET /server-info：能力探测（qrLogin 等）。拿不到（老服务端 / 网络不通）抛异常 */
+    suspend fun serverInfo(server: String, serverPassword: String?, fingerprint: String?): Pair<JsonObject, String> {
+        val result = get(server, "/server-info", serverPassword = serverPassword, fingerprint = fingerprint)
+        if (!result.ok) throw Exception("连不上聊天服务器（HTTP ${result.status}）")
+        val obj = runCatching { json.parseToJsonElement(result.body).jsonObject }.getOrNull()
+            ?: throw Exception("聊天服务器的回执看不懂")
+        return obj to result.fingerprint
+    }
+
+    /** 一次扫码登录会话：码面是 `SCSH:1:login:<token>`，TTL 300 秒，建议每 [intervalMs] 问一次 */
+    data class LoginSession(val token: String, val expiresAt: Long, val intervalMs: Long)
+
+    /** POST /login-sessions（匿名）：{deviceId, devicePlatform, deviceName} → {token, expiresAt, intervalMs} */
+    suspend fun createLoginSession(
+        server: String,
+        deviceId: String,
+        deviceName: String,
+        serverPassword: String?,
+        fingerprint: String?,
+    ): Pair<LoginSession, String> {
+        val result = post(
+            server = server,
+            path = "/login-sessions",
+            body = buildJsonObject("deviceId" to deviceId, "devicePlatform" to "android", "deviceName" to deviceName),
+            serverPassword = serverPassword,
+            fingerprint = fingerprint,
+        )
+        if (result.status == 429) throw Exception("试得太频繁了，等一分钟再试")
+        if (!result.ok) throw Exception("建不了扫码登录（HTTP ${result.status}）")
+        val obj = json.parseToJsonElement(result.body).jsonObject
+        val token = obj.str("token")?.takeIf { it.isNotBlank() } ?: throw Exception("扫码登录的回执里没有 token")
+        return LoginSession(
+            token = token,
+            expiresAt = parseTime(obj["expiresAt"]) ?: (System.currentTimeMillis() + 300_000),
+            intervalMs = (obj.long("intervalMs") ?: 2_000).coerceIn(1_000, 10_000),
+        ) to result.fingerprint
+    }
+
+    /** 扫码登录那边现在怎样了 */
+    sealed interface LoginPoll {
+        data object Pending : LoginPoll
+        /** 手机扫到了，等它在手机上点确认 */
+        data object Scanned : LoginPoll
+        data object Denied : LoginPoll
+        /** 过期 / 已用 / 不存在（服务端一律 404，反探测） */
+        data object Expired : LoginPoll
+        data class Approved(val session: SessionPayload) : LoginPoll
+    }
+
+    /** POST /login-sessions/poll（匿名）：{token, deviceId}；approved 时一次性带完整登录态（同 /auth/login） */
+    suspend fun pollLoginSession(
+        server: String,
+        token: String,
+        deviceId: String,
+        serverPassword: String?,
+        fingerprint: String?,
+    ): LoginPoll {
+        val result = post(
+            server = server,
+            path = "/login-sessions/poll",
+            body = buildJsonObject("token" to token, "deviceId" to deviceId),
+            serverPassword = serverPassword,
+            fingerprint = fingerprint,
+        )
+        if (result.status == 404) return LoginPoll.Expired
+        if (!result.ok) throw Exception("HTTP ${result.status}")
+        val obj = json.parseToJsonElement(result.body).jsonObject
+        return when (obj.str("status")) {
+            "scanned" -> LoginPoll.Scanned
+            "denied" -> LoginPoll.Denied
+            "approved" -> parseSession(result.body).let { session ->
+                if (session.token.isBlank()) throw Exception("确认了，但回执里没有凭据") else LoginPoll.Approved(session)
+            }
+            else -> LoginPoll.Pending
+        }
+    }
+
+    /** GET /me：账号叫什么（扫码登录不知道用户名，设置里显示用）；拿不到就 null */
+    suspend fun me(server: String, token: String, fingerprint: String?): String? = runCatching {
+        val result = get(server, "/me", token = token, fingerprint = fingerprint)
+        if (!result.ok) return null
+        val obj = json.parseToJsonElement(result.body).jsonObject
+        val user = (obj["user"] as? JsonObject) ?: obj
+        user.str("username")?.takeIf { it.isNotBlank() } ?: user.str("nickname")?.takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    /** ISO 时间 / Unix 秒 / 毫秒 → 毫秒 */
+    private fun parseTime(element: kotlinx.serialization.json.JsonElement?): Long? {
+        val text = (element as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+        if (text.isEmpty()) return null
+        text.toDoubleOrNull()?.let { n -> return if (n > 1e12) n.toLong() else (n * 1000).toLong() }
+        return runCatching { java.time.Instant.parse(text).toEpochMilli() }.getOrNull()
+    }
+
     private fun parseSession(body: String): SessionPayload {
         val obj = json.parseToJsonElement(body).jsonObject
         val legacy = obj.str("token") ?: obj.str("accessToken").orEmpty()

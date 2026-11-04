@@ -96,6 +96,7 @@ dependencies {
     // 数据通道用 stream 的 WebRTC 构建（org.webrtc 的 API，和 Secret-Chat 安卓端同一个库）。
     implementation(libs.okhttp)
     implementation(libs.webrtc)
+    implementation(libs.zxing.core)
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.ui.test.junit4)
