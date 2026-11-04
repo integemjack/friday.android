@@ -217,7 +217,9 @@ fun AssistantScreen(
                             cachedAt = state.cachedAt,
                         )
                     }
-                    // 列表一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐
+                    // 列表一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐。
+                    // 不够一屏时贴着输入框往上排（Alignment.Bottom，还是按时间从上往下）：
+                    // 别全堆在顶上、下面空着大半屏（会话页短会话才从顶上排）；超过一屏就照常从上往下滚
                     CompositionLocalProvider(LocalFollowBottom provides follow) {
                     LazyColumn(
                         state = listState,
@@ -228,7 +230,7 @@ fun AssistantScreen(
                             top = TopFadeHeight,
                             bottom = 8.dp + LocalDockPadding.current,
                         ),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
                     ) {
                         // 最上面：翻更早的、还没有动静
                         if (state.assistantLoading) {

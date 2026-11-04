@@ -1344,6 +1344,38 @@ class UiRenderTest {
     }
 
     @Test
+    fun `助手页日志不够一屏时贴着输入框往上排，按时间先后`() {
+        val assistant = AssistantState.fromJson(buildJsonObject { put("enabled", true); put("config", buildJsonObject { put("name", "小F") }) })
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                assistant = assistant,
+                assistantEntries = listOf(
+                    journalEntry("u1", "user", "第 1 句"),
+                    journalEntry("u2", "assistant", "第 2 句"),
+                ),
+            )
+        )
+        // 按真的样子摆：主外壳 + 助手页 + 底部它的输入框
+        render(model) {
+            HomeScaffold(
+                tab = HomeTabs.ASSISTANT,
+                onTab = {},
+                dock = { AssistantComposer(remember { ComposerDraft() }) },
+                sessions = { SessionsScreen(onOpen = {}) },
+            ) { AssistantScreen() }
+        }
+
+        val first = compose.onNodeWithText("第 1 句").getBoundsInRoot()
+        val last = compose.onNodeWithText("第 2 句").getBoundsInRoot()
+        val input = compose.onNodeWithText("跟助手说点什么…").getBoundsInRoot()
+        assertTrue("先说的那条应该在上面", first.bottom <= last.top)
+        assertTrue("最后一条 ${last.bottom} 被输入框 ${input.top} 挡住了", last.bottom <= input.top)
+        // 最后一条下面只有它那行时间 + 列表底边距，不是空着大半屏
+        assertTrue("没贴着输入框：中间空了 ${input.top - last.bottom}", input.top - last.bottom < 80.dp)
+    }
+
+    @Test
     fun `离线点开会话看存下来的内容，输入框说清楚现在不能发`() {
         val model = modelWith(FridayState(conn = ConnState.Disconnected, summaries = listOf(offlineSummary)))
         val cached = chatState(listOf(message("1", "assistant", listOf(textBlock("b1", "上次的回答")))))

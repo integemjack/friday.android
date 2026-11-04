@@ -12,7 +12,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 
 /**
- * 会话页、助手页的列表都从上往下排（最新的在最下面），「贴着底」是自己跟的：
+ * 会话页、助手页的列表都从上往下排（最新的在最下面；助手页不够一屏时整体贴着输入框），「贴着底」是自己跟的：
  * 在最底下时，来了新的、最后一条流式变长，就跟到底；往上翻了、或者点开了什么，就不跟，
  * 直到又滑回最底下（或点「回到最新」）。
  *
