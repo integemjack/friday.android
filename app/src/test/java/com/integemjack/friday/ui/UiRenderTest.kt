@@ -27,11 +27,11 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import com.integemjack.friday.AppModel
-import com.integemjack.friday.proto.AskOption
-import com.integemjack.friday.proto.AskQuestion
 import com.integemjack.friday.proto.ChatMessage
 import com.integemjack.friday.proto.ChatState
 import com.integemjack.friday.proto.ConnState
@@ -39,11 +39,9 @@ import com.integemjack.friday.proto.ConversationSummary
 import com.integemjack.friday.proto.FridayState
 import com.integemjack.friday.proto.GenerationStats
 import com.integemjack.friday.proto.MessageBlock
-import com.integemjack.friday.proto.PendingApproval
 import com.integemjack.friday.proto.QueuedInput
 import com.integemjack.friday.proto.Runtime
 import com.integemjack.friday.proto.ServerInfo
-import com.integemjack.friday.proto.SessionActivity
 import com.integemjack.friday.ui.theme.FridayTheme
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -549,75 +547,6 @@ class UiRenderTest {
         compose.onNodeWithText("算了").assertExists()
     }
 
-    // MARK: 活动页
-
-    @Test
-    fun `待确认的调用给批准和拒绝`() {
-        val model = modelWith(
-            FridayState(
-                conn = connected,
-                activities = listOf(
-                    SessionActivity(
-                        id = "C1", title = "改代码", status = "approval", taskGoal = null, taskSteps = emptyList(),
-                        approvals = listOf(PendingApproval("e1", "run_shell", "跑一条命令", "rm -rf build", null)),
-                        currentToolTitle = "跑一条命令", currentToolSummary = null,
-                        updatedAt = "2026-01-01T00:00:00Z",
-                    )
-                ),
-            )
-        )
-        render(model) { ActivityScreen() }
-
-        compose.onNodeWithText("待确认（1）").assertIsDisplayed()
-        compose.onNodeWithText("跑一条命令").assertIsDisplayed()
-        compose.onNodeWithText("rm -rf build").assertIsDisplayed()
-        compose.onNodeWithText("批准").assertIsDisplayed()
-        compose.onNodeWithText("拒绝").assertIsDisplayed()
-    }
-
-    @Test
-    fun `ask_user 的提问列出选项，推荐的标出来`() {
-        val model = modelWith(
-            FridayState(
-                conn = connected,
-                activities = listOf(
-                    SessionActivity(
-                        id = "C1", title = "改代码", status = "question", taskGoal = null, taskSteps = emptyList(),
-                        approvals = listOf(
-                            PendingApproval(
-                                "e2", "ask_user", "问你一句", "",
-                                questions = listOf(
-                                    AskQuestion(
-                                        question = "用哪个方案？",
-                                        options = listOf(AskOption("方案 A", "简单"), AskOption("方案 B", null)),
-                                        multiple = false,
-                                        recommended = 0,
-                                    )
-                                ),
-                            )
-                        ),
-                        currentToolTitle = null, currentToolSummary = null,
-                        updatedAt = "2026-01-01T00:00:00Z",
-                    )
-                ),
-            )
-        )
-        render(model) { ActivityScreen() }
-
-        compose.onNodeWithText("用哪个方案？").assertIsDisplayed()
-        // 选项文字里不再拼「○」和「（推荐）」：左边是单选图标，推荐单独一个胶囊
-        compose.onNodeWithText("方案 A").assertIsDisplayed()
-        compose.onNodeWithText("简单").assertIsDisplayed()
-        compose.onNodeWithText("方案 B").assertIsDisplayed()
-        compose.onNodeWithText("推荐").assertIsDisplayed()
-    }
-
-    @Test
-    fun `没连上时活动页给提示而不是空白`() {
-        render(modelWith(FridayState())) { ActivityScreen() }
-        compose.onNodeWithText("连接远程机器后，这里显示所有会话的实时动静和待确认的调用。").assertIsDisplayed()
-    }
-
     // MARK: 顶级页面 + 共用输入框 + 侧栏
 
     @Test
@@ -707,10 +636,11 @@ class UiRenderTest {
                 ),
             )
         )
+        var picked: Int? = null
         render(model) {
             HomeScaffold(
-                tab = HomeTabs.ASSISTANT,
-                onTab = {},
+                tab = HomeTabs.SETTINGS,
+                onTab = { picked = it },
                 sessions = { SessionsScreen(onOpen = {}, selectedId = "C1") },
             ) {}
         }
@@ -722,8 +652,11 @@ class UiRenderTest {
         compose.onNodeWithText("更早").assertExists()
         compose.onNodeWithText("钉住的那段").assertExists()
         compose.onNodeWithText("草稿").assertExists()
-        // 同一段会话又要批准又在提问，只算一段
-        compose.onNodeWithText("1 待确认").assertExists()
+        // 活动页和单列的「助手」都去掉了：顶上的 Friday 就是助手页入口
+        assertNoText("活动")
+        assertNoText("助手")
+        compose.onNodeWithText("Friday").performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(HomeTabs.ASSISTANT, picked)
     }
 
     // MARK: 输入框「＋」面板：附件 / 模型（带余额）/ 任务模式 / 思考模式 / 工作目录 / 视频通话

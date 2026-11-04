@@ -581,7 +581,7 @@ private fun AboutCard() {
         SectionTitle(icon = Icons.Filled.Info, title = "关于")
         Spacer(Modifier.height(8.dp))
         Text(
-            "Friday Android：远程 Friday 的手机客户端（会话 / 活动总览 / 待确认）。" +
+            "Friday Android：远程 Friday 的手机客户端（助手 / 会话 / 设置）。" +
                 "协议按 Friday/qt/docs/REMOTE.md 实现；对应桌面版 friday-desktop-work。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

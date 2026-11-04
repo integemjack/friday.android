@@ -46,7 +46,6 @@ import kotlinx.serialization.json.put
  *   sessions      会话列表
  *   chat          聊天页（文本 / 思考 / 工具卡 / 排队 / 分支）
  *   chat-running  聊天页（生成中：转圈 + 跑着的工具卡）
- *   activity      活动页（在跑的会话 + 待确认的调用 / 提问）
  *   assistant     助手页（时间线：用户 / 助手 / 工具 / 回执 / 说明 + 状态板 + 渠道）
  *   assistant-off 助手页（还没打开那个样子）
  *   assistant-call 跟助手视频通话的那一页（接通中）

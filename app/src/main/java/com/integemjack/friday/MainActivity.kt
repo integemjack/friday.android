@@ -19,7 +19,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.activity.compose.BackHandler
-import com.integemjack.friday.ui.ActivityScreen
 import com.integemjack.friday.ui.AssistantComposer
 import com.integemjack.friday.ui.AssistantScreen
 import com.integemjack.friday.ui.ChatComposer
@@ -85,7 +84,6 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_TAB = "friday_tab"
         const val EXTRA_DEMO = "demo"
         const val TAB_ASSISTANT = 0
-        const val TAB_ACTIVITY = 1
         const val TAB_SETTINGS = 2
         const val TAB_CHAT = 3
         /** 导航条全透明（不是默认的 90% 白 scrim） */
@@ -121,7 +119,7 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     }
 }
 
-/** 主框架：登录了、选好机器人之后的那一套（助手 / 会话 / 活动 / 设置 + 侧栏） */
+/** 主框架：登录了、选好机器人之后的那一套（助手 / 会话 / 设置 + 侧栏） */
 @Composable
 private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Unit) {
     val model = LocalAppModel.current
@@ -149,10 +147,10 @@ private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Uni
         if (tab == HomeTabs.CHAT && target != HomeTabs.CHAT) model.client.closeConversation()
         tab = target
     }
-    // 通知点进来：跳到那一页
+    // 通知点进来：跳到那一页（老通知里带的活动页编号已经没了，回助手页）
     androidx.compose.runtime.LaunchedEffect(requested) {
         requested?.let {
-            go(it)
+            go(HomeTabs.of(it))
             tabRequest.value = null
         }
     }
@@ -205,7 +203,7 @@ private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Uni
         if (needed.isEmpty()) startCall() else callPermissions.launch(needed.toTypedArray())
     }
 
-    // 底部输入框：助手页和会话页是同一个 Composer，只是发给谁不同；活动 / 设置没有输入框
+    // 底部输入框：助手页和会话页是同一个 Composer，只是发给谁不同；设置页没有输入框
     val dock: (@Composable () -> Unit)? = when (tab) {
         HomeTabs.ASSISTANT -> {
             { AssistantComposer(assistantDraft, onVideoCall = ::requestCall) }
@@ -231,7 +229,6 @@ private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Uni
         when (tab) {
             HomeTabs.ASSISTANT -> AssistantScreen(onOpenSession = ::openConversation)
             HomeTabs.CHAT -> ChatScreen()
-            HomeTabs.ACTIVITY -> ActivityScreen(onOpen = { tab = HomeTabs.CHAT })
             else -> SettingsScreen(onSwitchBot = onSwitchBot)
         }
     }

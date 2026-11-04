@@ -29,9 +29,8 @@
   - `file.read`（附件，按 `relativePath`）、`fs.read`（工具参数里的本地路径，相对路径按会话工作目录拼）
   - 每块 1 MB，超上限（图片 24 MB / 视频 64 MB / 音频 32 MB）不拉、给提示
 - **附件**：聊天里能选相册图片 / 视频 / 任意文件，`file.upload` 分块上传，带进度，传完跟文字一起 `runner.submit`
-- **通知**：App 在后台时有待确认的调用 / 提问发系统通知（带会话名和工具名），点通知直达活动页；
+- **通知**：App 在后台时有待确认的调用 / 提问发系统通知（带会话名和工具名），点通知回到助手页；
   新版本下载完也通知。Android 13+ 首次启动申请通知权限
-- **活动**：所有会话的实时动静、待确认的调用批准 / 拒绝、ask_user 问题选项点选；点会话名直接进聊天
 - **离线 / 本地快照**：每台机器（SChat 账号 + 机器人）存一份：会话列表、助手的日志（最近 200 条）和设置、模型列表、
   默认任务模式、最近的工作目录、最近看过的 15 段会话内容（`filesDir/state-cache`，协议同一套 JSON）。没网、远程那台没开、
   刚打开 App 时先显示这些（标「离线 · 显示的是几点的内容」），连上后自动换成最新的；输入框里打了一半的话也存着。退出登录全删
@@ -117,7 +116,7 @@ app/src/main/java/com/integemjack/friday
   schat       SChat 那一头：schat-ws 连接（信令）、登录 / 凭据轮换 / 证书指纹钉住、机器人列表、ICE
   update      应用内自动更新（GitHub Releases 查询 / 进度下载 / 安装）
   data        SChat 会话与配置存储、Android Keystore 加密
-  ui          Compose 界面：会话 / 聊天 / 活动 / 设置；媒体视图（MediaViews）、附件（Attachments）
+  ui          Compose 界面：助手 / 会话 / 聊天 / 设置；媒体视图（MediaViews）、附件（Attachments）
 app/src/test    协议纯逻辑（含 WorkFramer / WorkSignaling）+ 假 RPC 的服务端 + Robolectric 界面渲染测试
                + LiveDialTest（默认跳过，真连 chatserver）
 tools         bump-version.sh（CI 与本地共用）+ 测试

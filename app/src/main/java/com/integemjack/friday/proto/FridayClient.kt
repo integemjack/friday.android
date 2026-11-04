@@ -74,7 +74,7 @@ data class FridayState(
     val summaries: List<ConversationSummary> = emptyList(),
     val runner: RunnerState? = null,
     val activities: List<SessionActivity> = emptyList(),
-    /** attention 事件计数（有待确认的调用时 +1，提醒用户看活动页） */
+    /** attention 事件计数（有待确认的调用时 +1，后台时据此发系统通知） */
     val attentionTick: Long = 0,
     /** 当前打开的会话 id（null = 没开） */
     val openConversationId: String? = null,
@@ -1074,11 +1074,6 @@ class FridayClient(
             })
         }
         runCatching { rpc.request("runner.resolveApproval", params) }
-        refreshActivities()
-    }
-
-    /** 活动页进入时刷新快照 */
-    suspend fun refresh() {
         refreshActivities()
     }
 }

@@ -37,9 +37,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -96,12 +94,15 @@ private const val DRAWER_WIDTH_FRACTION = 0.75f
  * 主框架的几页，全是**顶级页面**（同一个外壳、同一个侧栏入口、同一个底部输入框位置）。
  * 编号是通知 intent 里用的（[com.integemjack.friday.MainActivity.EXTRA_TAB]），别改已有的数。
  * 会话列表不单独成页 —— 它整段嵌在侧栏里；点一条进的是 [CHAT]。
+ * 1 原来是活动页，已经去掉了；不认识的编号一律回 [ASSISTANT]（见 [of]）。
  */
 object HomeTabs {
     const val ASSISTANT = 0
-    const val ACTIVITY = 1
     const val SETTINGS = 2
     const val CHAT = 3
+
+    /** 外面传进来的编号（通知 intent、老版本留下的）：认识的照用，不认识的回助手页 */
+    fun of(tab: Int): Int = if (tab == SETTINGS || tab == CHAT) tab else ASSISTANT
 }
 
 /** 打开侧栏：页面里通过这个拿到（CompositionLocal 比一层层传参干净） */
@@ -331,7 +332,7 @@ private fun drawerBackground(): Color = MaterialTheme.colorScheme.surfaceContain
 private val HomeTopBarHeight = 52.dp
 
 /**
- * 四个顶级页面共用的顶栏：左上角侧栏入口（有待确认的调用时带个小红点），标题（活动 / 设置下面再带一行小字；
+ * 顶级页面共用的顶栏：左上角侧栏入口（有待确认的调用时带个小红点），标题（设置下面再带一行小字；
  * 助手页、会话页只有标题）。切来切去，顶栏的高度、字号、按钮位置都不动。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -385,7 +386,7 @@ fun HomeTopBar(
 
 /**
  * 汉堡按钮：有调用 / 提问等你确认时右上角挂一个提醒色小点，在哪一页都看得到。
- * 四个顶级页面（助手、会话、活动、设置）左上角都是它。
+ * 顶级页面（助手、会话、设置）左上角都是它。
  */
 @Composable
 fun DrawerButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -416,7 +417,7 @@ private fun waitingCount(state: com.integemjack.friday.proto.FridayState): Int {
 }
 
 /**
- * 侧栏那一列：品牌 + 连接状态 → 助手 / 活动 → 会话（标题 + 新建 + 列表，占满剩下的高度，自己滚）
+ * 侧栏那一列：品牌 + 连接状态（点它进助手页）→ 会话（标题 + 新建 + 列表，占满剩下的高度，自己滚）
  * → 设置钉在底部（版本号挂在它右边）。
  */
 @Composable
@@ -431,8 +432,6 @@ private fun DrawerPanel(
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scheme = MaterialTheme.colorScheme
-    val running = state.runner?.generating?.size ?: 0
-    val waiting = waitingCount(state)
     // 侧栏不在 Surface 里：没写颜色的字默认是纯黑，深色模式下就看不见了。这里给一个默认前景色
     CompositionLocalProvider(LocalContentColor provides scheme.onSurface) {
         Column(
@@ -441,29 +440,15 @@ private fun DrawerPanel(
                 .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                 .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 6.dp),
         ) {
-            DrawerBrand(state.conn, state.lastServer)
-            Spacer(Modifier.height(14.dp))
-
-            DrawerItem(
-                icon = Icons.Filled.SelfImprovement,
-                label = state.assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手",
+            // 顶上的 Friday 就是助手页的入口（不再单列一个「助手」）
+            DrawerBrand(
+                conn = state.conn,
+                lastServer = state.lastServer,
                 selected = tab == HomeTabs.ASSISTANT,
-                trailing = if (state.assistant?.speaking == true) {
-                    { Chip("在说", color = scheme.primary) }
-                } else {
-                    null
-                },
-            ) { onPick(HomeTabs.ASSISTANT) }
-            DrawerItem(
-                icon = Icons.Filled.Bolt,
-                label = "活动",
-                selected = tab == HomeTabs.ACTIVITY,
-                trailing = when {
-                    waiting > 0 -> { { Chip("$waiting 待确认", color = scheme.tertiary) } }
-                    running > 0 -> { { Chip("$running 在跑", color = scheme.primary) } }
-                    else -> null
-                },
-            ) { onPick(HomeTabs.ACTIVITY) }
+                speaking = state.assistant?.speaking == true,
+                onClick = { onPick(HomeTabs.ASSISTANT) },
+            )
+            Spacer(Modifier.height(4.dp))
 
             // 会话：小标题 + 计数 + 新建，下面是真列表（点一条直接进会话页）
             Row(
@@ -517,9 +502,18 @@ private fun DrawerPanel(
     }
 }
 
-/** 侧栏顶上：渐变图标 + 名字 + 连着哪台机器（带状态灯） */
+/**
+ * 侧栏顶上：渐变图标 + 名字 + 连着哪台机器（带状态灯）。整块点进助手页；
+ * 在助手页时垫一层淡主色底（同侧栏里选中的那一项），助手在说话时右边挂「在说」
+ */
 @Composable
-private fun DrawerBrand(conn: ConnState, lastServer: com.integemjack.friday.proto.ServerInfo?) {
+private fun DrawerBrand(
+    conn: ConnState,
+    lastServer: com.integemjack.friday.proto.ServerInfo?,
+    selected: Boolean,
+    speaking: Boolean,
+    onClick: () -> Unit,
+) {
     val scheme = MaterialTheme.colorScheme
     val dark = scheme.background.luminance() < 0.5f
     val (dot, line) = when (conn) {
@@ -532,7 +526,10 @@ private fun DrawerBrand(conn: ConnState, lastServer: com.integemjack.friday.prot
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 6.dp, vertical = 4.dp),
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (selected) scheme.primaryContainer.copy(alpha = 0.75f) else Color.Transparent)
+            .clickable(role = Role.Button, onClickLabel = "打开助手", onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -570,6 +567,10 @@ private fun DrawerBrand(conn: ConnState, lastServer: com.integemjack.friday.prot
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+        }
+        if (speaking) {
+            Spacer(Modifier.width(6.dp))
+            Chip("在说", color = scheme.primary)
         }
     }
 }

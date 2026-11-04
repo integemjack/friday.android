@@ -288,11 +288,11 @@ class AppModel(private val app: Application) {
         if (schat.state.value.phase == SchatService.Phase.Online) client.reconnectNow()
     }
 
-    /** 点开通知直达的那一页（活动页） */
-    private fun activityTabIntent(): PendingIntent {
+    /** 点开通知直达的那一页（助手页，主页面） */
+    private fun assistantTabIntent(): PendingIntent {
         val intent = Intent(app, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(MainActivity.EXTRA_TAB, MainActivity.TAB_ACTIVITY)
+            putExtra(MainActivity.EXTRA_TAB, MainActivity.TAB_ASSISTANT)
         }
         return PendingIntent.getActivity(
             app, 0, intent,
@@ -321,7 +321,7 @@ class AppModel(private val app: Application) {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("新版本 v$version 已下载")
             .setContentText("点开应用完成安装")
-            .setContentIntent(activityTabIntent())
+            .setContentIntent(assistantTabIntent())
             .setAutoCancel(true)
             .build()
         post(1001, notification)
@@ -351,7 +351,7 @@ class AppModel(private val app: Application) {
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setContentIntent(activityTabIntent())
+            .setContentIntent(assistantTabIntent())
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
