@@ -90,10 +90,11 @@ class MainActivity : ComponentActivity() {
 fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     val model = LocalAppModel.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
-    var tab by rememberSaveable { mutableIntStateOf(MainActivity.TAB_SESSIONS) }
+    // 主页面就是助手页：开 App 进来先看它在忙什么
+    var tab by rememberSaveable { mutableIntStateOf(MainActivity.TAB_ASSISTANT) }
     var showChat by rememberSaveable { mutableStateOf(Demo.startInChat) }
     var chatError by remember { mutableStateOf<String?>(null) }
-    // 助手页 dock 里打了一半的话：提到这一层，切 tab 再回来不丢
+    // 助手页 dock 里打了一半的话：提到这一层，切到别的页再回来不丢
     var assistantInput by rememberSaveable { mutableStateOf("") }
     val requested by tabRequest.collectAsState()
     // 通知点进来：跳到那一页（从聊天里出来，回到主框架）
@@ -115,7 +116,7 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     if (showChat) {
         ChatScreen(onBack = { showChat = false })
     } else {
-        // 助手页：输入框和 tab 行坐同一块 dock（HomeScaffold 里），不是两条叠着
+        // 助手页：输入框坐它自己的底栏（HomeScaffold 里），没有底部导航栏
         val dock: (@Composable () -> Unit)? =
             if (tab == MainActivity.TAB_ASSISTANT) {
                 { AssistantInputBar(input = assistantInput, onInput = { assistantInput = it }) }

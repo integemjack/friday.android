@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayCircle
@@ -94,7 +95,11 @@ import kotlinx.coroutines.launch
  */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun AssistantScreen(onOpenSession: (String) -> Unit = {}) {
+fun AssistantScreen(
+    onOpenSession: (String) -> Unit = {},
+) {
+    // 侧栏入口：从外壳的 CompositionLocal 里拿
+    val openDrawer = LocalOpenDrawer.current
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
@@ -149,6 +154,18 @@ fun AssistantScreen(onOpenSession: (String) -> Unit = {}) {
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
                 ),
+                navigationIcon = {
+                    // 主页面就是这一页，不靠底部导航：侧栏入口放在左上角
+                    if (openDrawer != null) {
+                        IconButton(onClick = openDrawer) {
+                            Icon(
+                                Icons.Filled.Menu,
+                                contentDescription = "打开侧边栏",
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                    }
+                },
                 title = {
                     Column {
                         Text(

@@ -457,8 +457,11 @@ class UiRenderTest {
         render(model) { ActivityScreen() }
 
         compose.onNodeWithText("用哪个方案？").assertIsDisplayed()
-        compose.onNodeWithText("○ 方案 A — 简单（推荐）").assertIsDisplayed()
-        compose.onNodeWithText("○ 方案 B").assertIsDisplayed()
+        // 选项文字里不再拼「○」和「（推荐）」：左边是单选图标，推荐单独一个胶囊
+        compose.onNodeWithText("方案 A").assertIsDisplayed()
+        compose.onNodeWithText("简单").assertIsDisplayed()
+        compose.onNodeWithText("方案 B").assertIsDisplayed()
+        compose.onNodeWithText("推荐").assertIsDisplayed()
     }
 
     @Test

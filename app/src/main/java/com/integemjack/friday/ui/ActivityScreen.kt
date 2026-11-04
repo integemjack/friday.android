@@ -3,6 +3,8 @@ package com.integemjack.friday.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,15 +23,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.QuestionAnswer
+import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -55,6 +61,7 @@ import kotlinx.coroutines.launch
 /** 活动总览：这台远程机器所有会话的实时动静 + 待确认的调用 / 提问 */
 @Composable
 fun ActivityScreen(onOpen: () -> Unit = {}) {
+    val openDrawer = LocalOpenDrawer.current
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
@@ -71,7 +78,14 @@ fun ActivityScreen(onOpen: () -> Unit = {}) {
     LaunchedEffect(Unit) { model.client.refresh() }
 
     if (!state.connected) {
-        EmptyHint("连接远程机器后，这里显示所有会话的实时动静和待确认的调用。")
+        Box(Modifier.fillMaxSize()) {
+            if (openDrawer != null) {
+                IconButton(onClick = openDrawer, modifier = Modifier.padding(start = 4.dp, top = 2.dp)) {
+                    Icon(Icons.Filled.Menu, contentDescription = "打开侧边栏", modifier = Modifier.size(22.dp))
+                }
+            }
+            EmptyHint("连接远程机器后，这里显示所有会话的实时动静和待确认的调用。")
+        }
         return
     }
 
@@ -85,21 +99,19 @@ fun ActivityScreen(onOpen: () -> Unit = {}) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("活动", style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.width(10.dp))
-                if (running > 0) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Dot(MaterialTheme.colorScheme.primary, size = 6.dp)
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            "$running 个在跑",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-            }
+            PageHeader(
+                title = "活动",
+                count = if (running > 0) running else null,
+                subtitle = when {
+                    running > 0 -> "$running 个会话在跑" + if (pending.isNotEmpty()) " · ${pending.size} 个等你确认" else ""
+                    pending.isNotEmpty() -> "${pending.size} 个等你确认"
+                    else -> "现在都闲下来了"
+                },
+                dotColor = if (running > 0) MaterialTheme.colorScheme.primary
+                else if (pending.isNotEmpty()) MaterialTheme.colorScheme.tertiary
+                else LocalFridayExtra.current.success,
+                onOpenDrawer = openDrawer,
+            )
         }
         if (pending.isNotEmpty()) {
             item {
@@ -152,11 +164,16 @@ fun ActivityScreen(onOpen: () -> Unit = {}) {
                             Text(q.question, style = MaterialTheme.typography.bodyMedium)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 q.options.forEachIndexed { index, option ->
+                                    val recommended = index == q.recommended
+                                    // 左边那个图标已经是个圈了，文字里不要再拼一个「○」
                                     Row(
                                         Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(12.dp))
-                                            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f))
+                                            .background(
+                                                if (recommended) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.10f)
+                                                else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f)
+                                            )
                                             .clickable {
                                                 scope.launch {
                                                     model.client.resolveApproval(
@@ -169,18 +186,32 @@ fun ActivityScreen(onOpen: () -> Unit = {}) {
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Icon(
-                                            Icons.Filled.RadioButtonUnchecked,
+                                            if (recommended) Icons.Filled.RadioButtonChecked
+                                            else Icons.Filled.RadioButtonUnchecked,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.tertiary,
+                                            tint = if (recommended) MaterialTheme.colorScheme.tertiary
+                                            else MaterialTheme.colorScheme.outline,
                                             modifier = Modifier.size(16.dp),
                                         )
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(
-                                            "○ " + option.label + (option.detail?.let { " — $it" } ?: "") +
-                                                if (index == q.recommended) "（推荐）" else "",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            modifier = Modifier.weight(1f),
-                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                option.label,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                            option.detail?.let {
+                                                Text(
+                                                    it,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
+                                        if (recommended) {
+                                            Spacer(Modifier.width(6.dp))
+                                            Chip("推荐", color = MaterialTheme.colorScheme.tertiary)
+                                        }
                                     }
                                 }
                             }
@@ -201,17 +232,24 @@ fun ActivityScreen(onOpen: () -> Unit = {}) {
                             ) { Text("拒绝") }
                         }
                     }
+                    // 跳到那段会话：给个箭头，别让人以为这只是行说明
                     Row(
                         Modifier
                             .clip(RoundedCornerShape(50))
                             .clickable { openSession(activity.id) }
-                            .padding(vertical = 2.dp),
+                            .padding(end = 4.dp, top = 2.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             "来自：${activity.title.ifBlank { "会话" }}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Icon(
+                            Icons.Filled.ChevronRight,
+                            contentDescription = "打开这段会话",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp),
                         )
                     }
                 }
@@ -240,68 +278,89 @@ fun ActivityScreen(onOpen: () -> Unit = {}) {
 @Composable
 private fun ActivityRow(a: SessionActivity, onClick: () -> Unit) {
     val extra = LocalFridayExtra.current
+    val scheme = MaterialTheme.colorScheme
     val (icon, tint, label) = when (a.status) {
-        "running" -> Triple(Icons.Filled.PlayCircle, MaterialTheme.colorScheme.primary, "在跑")
-        "approval", "question" -> Triple(Icons.Filled.QuestionAnswer, MaterialTheme.colorScheme.tertiary, "待确认")
-        "quota" -> Triple(Icons.Filled.HourglassEmpty, MaterialTheme.colorScheme.secondary, "限流")
-        "error" -> Triple(Icons.Filled.ErrorOutline, MaterialTheme.colorScheme.error, "出错")
+        "running" -> Triple(Icons.Filled.PlayCircle, scheme.primary, "在跑")
+        "approval", "question" -> Triple(Icons.Filled.QuestionAnswer, scheme.tertiary, "待确认")
+        "quota" -> Triple(Icons.Filled.HourglassEmpty, scheme.secondary, "限流")
+        "error" -> Triple(Icons.Filled.ErrorOutline, scheme.error, "出错")
         else -> Triple(Icons.Filled.CheckCircle, extra.success, "空闲")
     }
-    Column(
+    // 在跑的那几行左边一根跳动的主色竖条，一眼能扫出哪些还活着
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .clickable(onClick = onClick)
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .background(if (pressed) scheme.surfaceContainerHigh else scheme.surfaceContainerLow)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(
-                a.title.ifBlank { "（无标题）" },
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
+        if (a.status == "running") {
+            Box(
+                Modifier
+                    .width(3.dp)
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(scheme.primary.copy(alpha = 0.55f))
             )
-            Chip(label, color = tint)
+            Spacer(Modifier.width(9.dp))
         }
-        if (a.currentToolTitle != null) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (a.status == "running") {
-                    CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.5.dp)
-                    Spacer(Modifier.width(6.dp))
-                }
+                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    "正在：${a.currentToolTitle}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    a.title.ifBlank { "（无标题）" },
+                    style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                Chip(label, color = tint)
             }
-        }
-        a.taskGoal?.let { goal ->
-            Text("目标：$goal", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            val doing = a.taskSteps.firstOrNull { it.status == "doing" }
-            if (doing != null) {
+            if (a.currentToolTitle != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier
-                            .size(5.dp)
-                            .clip(RoundedCornerShape(5.dp))
-                            .background(MaterialTheme.colorScheme.primary)
-                    )
-                    Spacer(Modifier.width(6.dp))
+                    if (a.status == "running") {
+                        CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.5.dp)
+                        Spacer(Modifier.width(6.dp))
+                    }
                     Text(
-                        doing.text,
+                        "正在：${a.currentToolTitle}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = scheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+            }
+            a.taskGoal?.let { goal ->
+                Text(
+                    "目标：$goal",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val doing = a.taskSteps.firstOrNull { it.status == "doing" }
+                if (doing != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier
+                                .size(5.dp)
+                                .clip(RoundedCornerShape(5.dp))
+                                .background(scheme.primary)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            doing.text,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = scheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }

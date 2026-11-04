@@ -1,34 +1,37 @@
 package com.integemjack.friday.ui
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Bolt
@@ -40,24 +43,42 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.integemjack.friday.proto.ConnState
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
+
+/** 侧栏占屏幕宽度的比例（用户要求 3/4，主屏剩下左边 1/4 露在右侧） */
+private const val DRAWER_WIDTH_FRACTION = 0.75f
+
+/** 打开侧栏：页面里通过这个拿到（CompositionLocal 比一层层传参干净） */
+val LocalOpenDrawer = androidx.compose.runtime.staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /**
- * 主框架：底部四 tab（助手 / 会话 / 活动 / 设置）。
+ * 主外壳：助手页是主页面，没有底部导航栏。
  *
- * 底栏是一整块 dock，不是「输入框 + 导航栏」两条叠着：
- * - 同一个背景、同一条顶边、一起让位系统导航条；
- * - 助手页时 [dock] 那行（输入框）在上、tab 行在下，看着是一个组件；
- * - 键盘弹起时 tab 行收起，只留输入框贴在键盘上方（省出屏幕，也不用担心误切页）；
- * - 让位取「键盘」和「导航条」里大的那个，两者不叠加。
+ * 会话列表 / 活动 / 设置都在侧栏里。手指往右滑时 **主屏跟着一起挪**（不是盖一层遮罩的 drawer，
+ * 也没有 scrim）：侧栏从左边推进来、主屏同步右移，两侧都跟着手指走
+ * （拖动时每帧把位移喂给 [Animatable]，松手按过半没过半吸附到开 / 关）。
+ * 全开时侧栏占左边 3/4，主屏让到右边只剩自己左边的 1/4。
  *
- * 更新的进度与「安装」只在设置 › 版本与更新 里。
+ * 底部 [dock] 只有助手页需要（跟助手说话那行），它跟着主屏一起移动。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -70,67 +91,205 @@ fun HomeScaffold(
     activity: @Composable () -> Unit,
     settings: @Composable () -> Unit,
 ) {
-    val imeVisible = WindowInsets.isImeVisible
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        bottomBar = {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                    // 键盘弹起时整块 dock 坐到键盘上；没键盘时让出系统导航条
-                    .windowInsetsPadding(
-                        WindowInsets.safeDrawing
-                            .union(WindowInsets.ime)
-                            .only(WindowInsetsSides.Bottom)
+    val scheme = MaterialTheme.colorScheme
+    BoxWithConstraints(Modifier.fillMaxSize().background(scheme.surface)) {
+        val scope = rememberCoroutineScope()
+        val drawerWidthPx = with(LocalDensity.current) { (maxWidth * DRAWER_WIDTH_FRACTION).toPx() }
+        val offset = remember { Animatable(0f) }
+
+        fun openDrawer() {
+            scope.launch { offset.animateTo(drawerWidthPx, tween(260)) }
+        }
+        fun closeDrawer() {
+            scope.launch { offset.animateTo(0f, tween(220)) }
+        }
+
+        // 侧栏：宽度按比例给够，位移 = 已拉出的部分 - 自身宽度（没拉出时整个藏在左边外面）
+        DrawerPanel(
+            tab = tab,
+            onPick = { picked ->
+                onTab(picked)
+                closeDrawer()
+            },
+            modifier = Modifier
+                .width(maxWidth * DRAWER_WIDTH_FRACTION)
+                .fillMaxHeight()
+                .offset { IntOffset((offset.value - drawerWidthPx).roundToInt(), 0) },
+        )
+
+        // 主屏：整块跟着手指右移；移动时左边给圆角 + 一点投影，看着是被「推开」而不是「滑走」
+        Box(
+            Modifier
+                .fillMaxSize()
+                .offset { IntOffset(offset.value.roundToInt(), 0) }
+                .graphicsLayer {
+                    val progress = (offset.value / drawerWidthPx).coerceIn(0f, 1f)
+                    shape = RoundedCornerShape((progress * 22).dp)
+                    clip = progress > 0.01f
+                    shadowElevation = progress * 16.dp.toPx()
+                }
+                // 水平拖动交给它：主屏内容里没有横向滚动，不会跟谁抢。
+                // 纵向滚动（列表）由子级消费，不会走到这里
+                .pointerInput(drawerWidthPx) {
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            scope.launch {
+                                offset.snapTo((offset.value + dragAmount).coerceIn(0f, drawerWidthPx))
+                            }
+                        },
+                        onDragEnd = {
+                            val open = offset.value > drawerWidthPx / 2
+                            scope.launch {
+                                offset.animateTo(if (open) drawerWidthPx else 0f, tween(220))
+                            }
+                        },
+                        onDragCancel = {
+                            val open = offset.value > drawerWidthPx / 2
+                            scope.launch {
+                                offset.animateTo(if (open) drawerWidthPx else 0f, tween(220))
+                            }
+                        },
                     )
-            ) {
-                HorizontalDivider(
-                    thickness = 0.5.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
-                )
-                dock?.invoke()
-                AnimatedVisibility(
-                    visible = !imeVisible,
-                    enter = expandVertically(animationSpec = tween(180)) + fadeIn(tween(180)),
-                    exit = shrinkVertically(animationSpec = tween(140)) + fadeOut(tween(100)),
-                ) {
-                    DockTabs(tab = tab, onTab = onTab)
+                }
+        ) {
+            CompositionLocalProvider(LocalOpenDrawer provides ::openDrawer) {
+                Scaffold(
+                    containerColor = scheme.background,
+                    bottomBar = {
+                        if (dock != null) {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .background(scheme.surface)
+                                    .windowInsetsPadding(
+                                        WindowInsets.safeDrawing
+                                            .union(WindowInsets.ime)
+                                            .only(WindowInsetsSides.Bottom)
+                                    )
+                            ) {
+                                HorizontalDivider(
+                                    thickness = 0.5.dp,
+                                    color = scheme.outlineVariant.copy(alpha = 0.7f),
+                                )
+                                dock()
+                            }
+                        }
+                    },
+                ) { padding ->
+                    // consumeWindowInsets：里面那层（助手页自己的 Scaffold）再按 safeDrawing 让位时，
+                    // 导航条 / 键盘这段已经扣过了，不会重复让一次、在内容和底栏之间空出一条
+                    Column(Modifier.padding(padding).consumeWindowInsets(padding)) {
+                        when (tab) {
+                            0 -> assistant()
+                            1 -> sessions()
+                            2 -> activity()
+                            else -> settings()
+                        }
+                    }
                 }
             }
-        },
-    ) { padding ->
-        // consumeWindowInsets：里面那层（各页自己的 Scaffold）再按 safeDrawing 让位时，
-        // 导航条 / 键盘这段已经扣过了，不会重复让一次、在内容和 dock 之间空出一条
-        Column(Modifier.padding(padding).consumeWindowInsets(padding)) {
-            when (tab) {
-                0 -> assistant()
-                1 -> sessions()
-                2 -> activity()
-                else -> settings()
+            // 侧栏开着的时候点主屏任意处收起（盖一层透明的吃点击，不然会点进下面的列表）
+            if (offset.value > 1f) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null,
+                        ) { closeDrawer() }
+                )
             }
         }
     }
 }
 
-/** dock 下半截：四个 tab。自己画而不用 NavigationBar，好和上面的输入框行共用一个容器、一套间距 */
+/** 侧栏那一列：品牌 → 四项 → 底部版本。顺序按用户说的：助手、活动、会话列表、设置 */
 @Composable
-private fun DockTabs(tab: Int, onTab: (Int) -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(60.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun DrawerPanel(
+    tab: Int,
+    onPick: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier
+            .statusBarsPadding()
+            .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        DockTab(Icons.Filled.SelfImprovement, "助手", tab == 0) { onTab(0) }
-        DockTab(Icons.AutoMirrored.Filled.Chat, "会话", tab == 1) { onTab(1) }
-        DockTab(Icons.Filled.Bolt, "活动", tab == 2) { onTab(2) }
-        DockTab(Icons.Filled.Settings, "设置", tab == 3) { onTab(3) }
+        DrawerBrand()
+        Spacer(Modifier.height(18.dp))
+        DrawerItem(Icons.Filled.SelfImprovement, "助手", tab == 0) { onPick(0) }
+        DrawerItem(Icons.Filled.Bolt, "活动", tab == 2) { onPick(2) }
+        DrawerItem(Icons.AutoMirrored.Filled.Chat, "会话列表", tab == 1) { onPick(1) }
+        DrawerItem(Icons.Filled.Settings, "设置", tab == 3) { onPick(3) }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(
+            Modifier.padding(horizontal = 6.dp),
+            thickness = 0.5.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Friday · v${com.integemjack.friday.BuildConfig.VERSION_NAME}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            modifier = Modifier.padding(start = 10.dp),
+        )
     }
 }
 
+/** 侧栏顶上：图标 + 名字 + 连着哪台机器 */
 @Composable
-private fun RowScope.DockTab(
+private fun DrawerBrand() {
+    val model = LocalAppModel.current
+    val state by model.client.stateFlow.collectAsState()
+    val server = (state.conn as? ConnState.Connected)?.server
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(42.dp)
+                .clip(RoundedCornerShape(13.dp))
+                .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "F",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onPrimary,
+            )
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Friday", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (server != null) {
+                    Dot(com.integemjack.friday.ui.theme.LocalFridayExtra.current.success, size = 7.dp)
+                    Spacer(Modifier.width(5.dp))
+                }
+                Text(
+                    server?.displayName?.ifBlank { server.hostname } ?: "没连上",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** 侧栏里的一项：选中时整条淡主色底 + 主色图标文字 */
+@Composable
+private fun DrawerItem(
     icon: ImageVector,
     label: String,
     selected: Boolean,
@@ -138,29 +297,23 @@ private fun RowScope.DockTab(
 ) {
     val scheme = MaterialTheme.colorScheme
     val tint = if (selected) scheme.primary else scheme.onSurfaceVariant
-    Column(
+    Row(
         Modifier
-            .weight(1f)
-            .fillMaxHeight()
-            .clickable(onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) scheme.primaryContainer.copy(alpha = 0.65f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier
-                .clip(RoundedCornerShape(50))
-                .background(if (selected) scheme.primaryContainer.copy(alpha = 0.7f) else Color.Transparent)
-                .padding(horizontal = 18.dp, vertical = 2.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(icon, contentDescription = label, modifier = Modifier.height(21.dp), tint = tint)
-        }
-        Spacer(Modifier.height(1.dp))
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(13.dp))
         Text(
             label,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = tint,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = if (selected) scheme.primary else scheme.onSurface,
         )
     }
 }

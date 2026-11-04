@@ -14,13 +14,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
@@ -36,11 +40,12 @@ import com.integemjack.friday.ui.theme.LocalFridayExtra
  * 各页面只挑这些拼，圆角、留白、字号就不会各写一套。
  */
 
-/** 内容卡片：浅一档的底色 + 极细描边，不用阴影（列表里一片阴影会脏） */
+/** 内容卡片：白底浮在淡彩背景上 + 极细描边，不用阴影（列表里一片阴影会脏） */
 @Composable
 fun FridayCard(
     modifier: Modifier = Modifier,
-    color: Color = MaterialTheme.colorScheme.surfaceContainerLow,
+    color: Color = MaterialTheme.colorScheme.surfaceContainerLowest,
+    borderColor: Color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
     padding: Dp = 14.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -49,14 +54,76 @@ fun FridayCard(
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background(color)
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                RoundedCornerShape(20.dp),
-            )
+            .border(1.dp, borderColor, RoundedCornerShape(20.dp))
             .padding(padding),
         content = content,
     )
+}
+
+/**
+ * 页面的大标题区：大标题 + 数字胶囊 + 一行副标题（带状态灯）。
+ * 会话 / 活动 / 设置三页都走这一个，免得每页的字号、间距各写一套。
+ * 这些页面是从抽屉进来的，左上角给一个菜单按钮把抽屉再拉出来。
+ */
+@Composable
+fun PageHeader(
+    title: String,
+    count: Int? = null,
+    subtitle: String? = null,
+    dotColor: Color? = null,
+    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    onOpenDrawer: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier.padding(
+            start = if (onOpenDrawer != null) 0.dp else 4.dp,
+            top = 2.dp,
+            bottom = 4.dp,
+        )
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (onOpenDrawer != null) {
+                IconButton(onClick = onOpenDrawer, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        Icons.Filled.Menu,
+                        contentDescription = "打开侧边栏",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(title, style = MaterialTheme.typography.headlineSmall)
+            if (count != null && count > 0) {
+                Spacer(Modifier.width(10.dp))
+                Chip(
+                    "$count",
+                    color = MaterialTheme.colorScheme.primary,
+                    container = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                )
+            }
+        }
+        if (subtitle != null) {
+            Spacer(Modifier.height(3.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(start = if (onOpenDrawer != null) 44.dp else 0.dp),
+            ) {
+                if (dotColor != null) {
+                    Dot(dotColor, size = 6.dp)
+                    Spacer(Modifier.width(5.dp))
+                }
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = tint,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
 }
 
 /** 区块标题：图标 + 标题，右边可以挂个小标签 */
@@ -100,20 +167,39 @@ fun Chip(
         modifier = modifier
             .clip(RoundedCornerShape(50))
             .background(container)
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .padding(horizontal = 8.dp, vertical = 3.dp),
         style = MaterialTheme.typography.labelSmall,
         color = color,
         maxLines = 1,
     )
 }
 
-/** 圆点（状态灯） */
+/** 圆点（状态灯）：占住 size 这么宽，里面一个实心点 + 一圈淡晕，小尺寸下也看得出是个「灯」 */
 @Composable
 fun Dot(color: Color, size: Dp = 7.dp) {
     Box(
         Modifier
             .size(size)
-            .clip(RoundedCornerShape(size))
+            .clip(RoundedCornerShape(50))
+            .background(color.copy(alpha = 0.22f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(size * 0.6f)
+                .clip(RoundedCornerShape(50))
+                .background(color)
+        )
+    }
+}
+
+/** 分隔点：行内两个信息之间的小圆点（3dp 这种小尺寸用带光晕的 Dot 会发虚） */
+@Composable
+fun SepDot(color: Color = MaterialTheme.colorScheme.outlineVariant, size: Dp = 3.dp) {
+    Box(
+        Modifier
+            .size(size)
+            .clip(RoundedCornerShape(50))
             .background(color)
     )
 }
@@ -159,8 +245,13 @@ fun EmptyState(
         Box(
             Modifier
                 .size(64.dp)
-                .clip(RoundedCornerShape(22.dp))
-                .background(tint.copy(alpha = 0.12f)),
+                // 从左上到右下的淡淡渐变，比一块平色更像「卡片」而不是色块
+                .background(
+                    Brush.linearGradient(
+                        listOf(tint.copy(alpha = 0.20f), tint.copy(alpha = 0.07f)),
+                    ),
+                    RoundedCornerShape(22.dp),
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(30.dp))

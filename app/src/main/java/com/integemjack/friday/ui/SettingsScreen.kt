@@ -62,20 +62,26 @@ import kotlinx.coroutines.launch
 /** 设置：SChat 账号与远程 Friday、连接状态、版本与更新 */
 @Composable
 fun SettingsScreen() {
+    val openDrawer = LocalOpenDrawer.current
     Column(
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        // 卡片之间 14dp，不同组之间再多一条空隙（下面手动加 Spacer）
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("设置", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 4.dp))
+        PageHeader(
+            title = "设置",
+            subtitle = "账号、助手、更新与本机缓存",
+            onOpenDrawer = openDrawer,
+        )
         SchatCard()
         AssistantCard()
         UpdateCard()
         StorageCard()
         AboutCard()
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
     }
 }
 

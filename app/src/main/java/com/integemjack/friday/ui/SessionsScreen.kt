@@ -1,8 +1,12 @@
 package com.integemjack.friday.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.WifiOff
@@ -32,6 +37,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -46,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.integemjack.friday.proto.ConnState
@@ -59,6 +66,7 @@ import java.time.format.DateTimeFormatter
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SessionsScreen(onOpen: () -> Unit) {
+    val openDrawer = LocalOpenDrawer.current
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
@@ -76,9 +84,12 @@ fun SessionsScreen(onOpen: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     item {
-                        ListHeader(
+                        PageHeader(
+                            title = "会话",
                             count = state.summaries.size,
-                            subtitle = conn.server.displayName.ifBlank { conn.server.hostname },
+                            subtitle = "已连上 · " + conn.server.displayName.ifBlank { conn.server.hostname },
+                            dotColor = MaterialTheme.colorScheme.tertiary,
+                            onOpenDrawer = openDrawer,
                         )
                     }
                     if (state.summaries.isEmpty()) {
@@ -138,7 +149,7 @@ fun SessionsScreen(onOpen: () -> Unit) {
                         .padding(20.dp),
                 )
             }
-            is ConnState.Disconnected -> ConnectHint()
+            is ConnState.Disconnected -> ConnectHint(onOpenDrawer = openDrawer)
             is ConnState.Connecting -> Column(
                 Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -148,7 +159,7 @@ fun SessionsScreen(onOpen: () -> Unit) {
                 Spacer(Modifier.height(14.dp))
                 Text(conn.message, style = MaterialTheme.typography.bodyMedium)
             }
-            is ConnState.Failed -> ConnectHint(conn.message)
+            is ConnState.Failed -> ConnectHint(conn.message, openDrawer)
         }
     }
 
@@ -194,29 +205,7 @@ fun SessionsScreen(onOpen: () -> Unit) {
     }
 }
 
-/** 大标题：会话数 + 连的是哪台机器 */
-@Composable
-private fun ListHeader(count: Int, subtitle: String) {
-    Column(Modifier.padding(start = 4.dp, top = 8.dp, bottom = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("会话", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.width(10.dp))
-            if (count > 0) Chip("$count", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Spacer(Modifier.height(4.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Dot(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.9f), size = 6.dp)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                "已连上 · $subtitle",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
+/** 大标题：会话数 + 连的是哪台机器（已交给通用的 PageHeader） */
 
 /** 长按会话弹出的菜单（挂在对应那一行的 Box 里） */
 @Composable
@@ -278,21 +267,29 @@ private fun RenameDialog(initial: String, onDismiss: () -> Unit, onConfirm: (Str
 }
 
 @Composable
-private fun ConnectHint(error: String? = null) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        EmptyState(
-            icon = Icons.Filled.WifiOff,
-            title = if (error != null) "连接失败" else "还没有连接远程机器",
-            hint = error
-                ?: "到「设置」里登录 SChat 账号、选那台远程 Friday（走 WebRTC 连），连上后这里显示它的全部会话。",
-            tint = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-        )
+private fun ConnectHint(error: String? = null, onOpenDrawer: (() -> Unit)? = null) {
+    Box(Modifier.fillMaxSize()) {
+        // 没连上时也要能拉出抽屉去设置
+        if (onOpenDrawer != null) {
+            IconButton(onClick = onOpenDrawer, modifier = Modifier.padding(start = 4.dp, top = 2.dp)) {
+                Icon(Icons.Filled.Menu, contentDescription = "打开侧边栏", modifier = Modifier.size(22.dp))
+            }
+        }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            EmptyState(
+                icon = Icons.Filled.WifiOff,
+                title = if (error != null) "连接失败" else "还没有连接远程机器",
+                hint = error
+                    ?: "到「设置」里登 SChat 账号、选那台远程 Friday（走 WebRTC 连），连上后这里显示它的全部会话。",
+                tint = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            )
+        }
     }
 }
 
@@ -305,15 +302,45 @@ private fun SummaryRow(
     onLongPress: () -> Unit,
 ) {
     val title = s.title.ifBlank { "（无标题）" }
+    val scheme = MaterialTheme.colorScheme
+    // 按下去轻微收缩 + 底色更深一档：长列表里手指点下去要有反应，
+    // 不然点完不知道点没点到（打开会话要等远程回应）
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.985f else 1f, tween(120), label = "rowScale")
     Row(
         Modifier
             .fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
+            .background(
+                when {
+                    pressed -> scheme.surfaceContainerHigh
+                    // 置顶的会话底色略偏主色，跟下面的分开
+                    s.pinned -> scheme.primaryContainer.copy(alpha = 0.32f)
+                    else -> scheme.surfaceContainerLow
+                }
+            )
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongPress,
+            )
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 置顶：左侧一根竖条，一眼看出上面几条是钉住的
+        if (s.pinned) {
+            Box(
+                Modifier
+                    .width(3.dp)
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(scheme.primary.copy(alpha = 0.55f))
+            )
+            Spacer(Modifier.width(8.dp))
+        }
         MonogramBadge(title)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -343,9 +370,9 @@ private fun SummaryRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 s.workingDirectoryName?.let { dir ->
-                    Spacer(Modifier.width(6.dp))
-                    Dot(MaterialTheme.colorScheme.outlineVariant, size = 3.dp)
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(7.dp))
+                    SepDot()
+                    Spacer(Modifier.width(7.dp))
                     Text(
                         dir,
                         style = MaterialTheme.typography.labelSmall,
@@ -365,8 +392,16 @@ private fun SummaryRow(
     }
 }
 
-private val timeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+private val timeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+private val dayFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 
+/** 时间：今天只给几点几分，昨天给「昨天」，更早才带日期（一列全是 11-04 18:23 看不出先后） */
 private fun formatTime(iso: String): String = runCatching {
-    timeFormatter.format(Instant.parse(iso).atZone(ZoneId.systemDefault()))
+    val at = Instant.parse(iso).atZone(ZoneId.systemDefault())
+    val today = java.time.LocalDate.now()
+    when (at.toLocalDate()) {
+        today -> timeFormatter.format(at)
+        today.minusDays(1) -> "昨天 " + timeFormatter.format(at)
+        else -> dayFormatter.format(at)
+    }
 }.getOrDefault(iso.take(16))
