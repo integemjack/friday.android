@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -67,15 +68,27 @@ import kotlin.math.roundToInt
 /** 侧栏占屏幕宽度的比例（用户要求 3/4，主屏剩下左边 1/4 露在右侧） */
 private const val DRAWER_WIDTH_FRACTION = 0.75f
 
+/** 主框架的几页。会话列表不再单独一页 —— 它整段嵌在侧栏里 */
+object HomeTabs {
+    const val ASSISTANT = 0
+    const val ACTIVITY = 1
+    const val SETTINGS = 2
+}
+
 /** 打开侧栏：页面里通过这个拿到（CompositionLocal 比一层层传参干净） */
 val LocalOpenDrawer = androidx.compose.runtime.staticCompositionLocalOf<(() -> Unit)?> { null }
+
+/** 收起侧栏：侧栏里点会话时用（进聊天之前先把它收起来） */
+val LocalCloseDrawer = androidx.compose.runtime.staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /**
  * 主外壳：助手页是主页面，没有底部导航栏。
  *
- * 会话列表 / 活动 / 设置都在侧栏里。手指往右滑时 **主屏跟着一起挪**（不是盖一层遮罩的 drawer，
- * 也没有 scrim）：侧栏从左边推进来、主屏同步右移，两侧都跟着手指走
- * （拖动时每帧把位移喂给 [Animatable]，松手按过半没过半吸附到开 / 关）。
+ * 侧栏不是光秃秃四个菜单项：**助手、活动、然后是会话列表的详细内容（每条会话一行，点就进去）**，
+ * 设置钉在最底下。所以主框架里没有单独的「会话列表页」了（[sessions] 只在侧栏里出现）。
+ *
+ * 手指往右滑时 **主屏跟着一起挪**（不是盖一层遮罩的 drawer，也没有 scrim）：侧栏从左边推进来、
+ * 主屏同步右移，两侧都跟着手指走（拖动时每帧把位移喂给 [Animatable]，松手按过半没过半吸附到开 / 关）。
  * 全开时侧栏占左边 3/4，主屏让到右边只剩自己左边的 1/4。
  *
  * 底部 [dock] 只有助手页需要（跟助手说话那行），它跟着主屏一起移动。
@@ -111,6 +124,8 @@ fun HomeScaffold(
                 onTab(picked)
                 closeDrawer()
             },
+            closeDrawer = ::closeDrawer,
+            sessions = sessions,
             modifier = Modifier
                 .width(maxWidth * DRAWER_WIDTH_FRACTION)
                 .fillMaxHeight()
@@ -153,7 +168,10 @@ fun HomeScaffold(
                     )
                 }
         ) {
-            CompositionLocalProvider(LocalOpenDrawer provides ::openDrawer) {
+            CompositionLocalProvider(
+                LocalOpenDrawer provides ::openDrawer,
+                LocalCloseDrawer provides ::closeDrawer,
+            ) {
                 Scaffold(
                     containerColor = scheme.background,
                     bottomBar = {
@@ -181,9 +199,8 @@ fun HomeScaffold(
                     // 导航条 / 键盘这段已经扣过了，不会重复让一次、在内容和底栏之间空出一条
                     Column(Modifier.padding(padding).consumeWindowInsets(padding)) {
                         when (tab) {
-                            0 -> assistant()
-                            1 -> sessions()
-                            2 -> activity()
+                            HomeTabs.ASSISTANT -> assistant()
+                            HomeTabs.ACTIVITY -> activity()
                             else -> settings()
                         }
                     }
@@ -204,38 +221,75 @@ fun HomeScaffold(
     }
 }
 
-/** 侧栏那一列：品牌 → 四项 → 底部版本。顺序按用户说的：助手、活动、会话列表、设置 */
+/**
+ * 侧栏那一列：品牌 → 助手 / 活动 → 会话列表的详细内容（占满剩下的高度，自己滚） → 设置钉在底部。
+ */
 @Composable
 private fun DrawerPanel(
     tab: Int,
     onPick: (Int) -> Unit,
+    closeDrawer: () -> Unit,
+    sessions: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val model = LocalAppModel.current
+    val state by model.client.stateFlow.collectAsState()
     Column(
         modifier
             .statusBarsPadding()
             .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 8.dp),
     ) {
         DrawerBrand()
-        Spacer(Modifier.height(18.dp))
-        DrawerItem(Icons.Filled.SelfImprovement, "助手", tab == 0) { onPick(0) }
-        DrawerItem(Icons.Filled.Bolt, "活动", tab == 2) { onPick(2) }
-        DrawerItem(Icons.AutoMirrored.Filled.Chat, "会话列表", tab == 1) { onPick(1) }
-        DrawerItem(Icons.Filled.Settings, "设置", tab == 3) { onPick(3) }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(12.dp))
+        DrawerItem(Icons.Filled.SelfImprovement, "助手", tab == HomeTabs.ASSISTANT) {
+            onPick(HomeTabs.ASSISTANT)
+        }
+        DrawerItem(Icons.Filled.Bolt, "活动", tab == HomeTabs.ACTIVITY) {
+            onPick(HomeTabs.ACTIVITY)
+        }
+
+        // 会话列表整段就长在侧栏里：小标题 + 计数，下面是真列表（点一条直接进去）
+        Spacer(Modifier.height(16.dp))
+        Row(
+            Modifier.padding(start = 4.dp, end = 4.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "会话",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (state.summaries.isNotEmpty()) {
+                Spacer(Modifier.width(7.dp))
+                Chip(
+                    "${state.summaries.size}",
+                    color = MaterialTheme.colorScheme.primary,
+                    container = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                )
+            }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            // 侧栏里的会话行点了要先把侧栏收起来
+            CompositionLocalProvider(LocalCloseDrawer provides closeDrawer) {
+                sessions()
+            }
+        }
+
+        // 设置固定在底部，不跟会话列表滚
         HorizontalDivider(
-            Modifier.padding(horizontal = 6.dp),
+            Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
             thickness = 0.5.dp,
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
         )
-        Spacer(Modifier.height(12.dp))
+        DrawerItem(Icons.Filled.Settings, "设置", tab == HomeTabs.SETTINGS) {
+            onPick(HomeTabs.SETTINGS)
+        }
         Text(
             "Friday · v${com.integemjack.friday.BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-            modifier = Modifier.padding(start = 10.dp),
+            modifier = Modifier.padding(start = 10.dp, top = 2.dp, bottom = 4.dp),
         )
     }
 }

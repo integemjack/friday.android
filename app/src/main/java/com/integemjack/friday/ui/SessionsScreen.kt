@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,11 +63,15 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-/** 会话列表（或未连接时的连接提示） */
+/**
+ * 会话列表：现在整段嵌在侧栏里（没有单独的会话页），所以它不再有任何页头。
+ * 点一条 → 订那段会话并进聊天，同时把侧栏收起来。
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SessionsScreen(onOpen: () -> Unit) {
     val openDrawer = LocalOpenDrawer.current
+    val closeDrawer = LocalCloseDrawer.current
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
@@ -80,18 +85,9 @@ fun SessionsScreen(onOpen: () -> Unit) {
             is ConnState.Connected -> {
                 LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 6.dp, bottom = 84.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    item {
-                        PageHeader(
-                            title = "会话",
-                            count = state.summaries.size,
-                            subtitle = "已连上 · " + conn.server.displayName.ifBlank { conn.server.hostname },
-                            dotColor = MaterialTheme.colorScheme.tertiary,
-                            onOpenDrawer = openDrawer,
-                        )
-                    }
                     if (state.summaries.isEmpty()) {
                         item {
                             EmptyState(
@@ -108,10 +104,19 @@ fun SessionsScreen(onOpen: () -> Unit) {
                                 s,
                                 generating = state.runner?.isGenerating(s.id) == true,
                                 onClick = {
-                                    scope.launch {
-                                        runCatching { model.client.subscribeConversation(s.id) }
-                                            .onSuccess { onOpen() }
-                                            .onFailure { newError = it.message }
+                                    if (com.integemjack.friday.Demo.active) {
+                                        // 演示数据里没有真的 RPC：直接进聊天看排版
+                                        closeDrawer?.invoke()
+                                        onOpen()
+                                    } else {
+                                        scope.launch {
+                                            runCatching { model.client.subscribeConversation(s.id) }
+                                                .onSuccess {
+                                                    closeDrawer?.invoke()
+                                                    onOpen()
+                                                }
+                                                .onFailure { newError = it.message }
+                                        }
                                     }
                                 },
                                 onLongPress = { menuSummary = s },
@@ -131,6 +136,48 @@ fun SessionsScreen(onOpen: () -> Unit) {
                             )
                         }
                     }
+                }
+                // 会话页进去就是列表：顶上只留一条紧凑栏（汉堡 + 会话数 + 连接状态），
+                // 不再用大标题把屏幕顶部一大块占掉。
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .background(MaterialTheme.colorScheme.background.copy(alpha = 0.96f)),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    openDrawer?.let {
+                        IconButton(onClick = it, modifier = Modifier.size(44.dp)) {
+                            Icon(
+                                Icons.Filled.Menu,
+                                contentDescription = "打开侧边栏",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                    }
+                    Text("会话", style = MaterialTheme.typography.titleMedium)
+                    if (state.summaries.isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
+                        Chip(
+                            "${state.summaries.size}",
+                            color = MaterialTheme.colorScheme.primary,
+                            container = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Dot(MaterialTheme.colorScheme.tertiary, size = 6.dp)
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        conn.server.displayName.ifBlank { conn.server.hostname },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .widthIn(max = 150.dp)
+                            .padding(end = 14.dp),
+                    )
                 }
                 ExtendedFloatingActionButton(
                     onClick = {

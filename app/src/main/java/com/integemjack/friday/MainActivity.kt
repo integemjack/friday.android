@@ -78,9 +78,8 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_TAB = "friday_tab"
         const val EXTRA_DEMO = "demo"
         const val TAB_ASSISTANT = 0
-        const val TAB_SESSIONS = 1
-        const val TAB_ACTIVITY = 2
-        const val TAB_SETTINGS = 3
+        const val TAB_ACTIVITY = 1
+        const val TAB_SETTINGS = 2
         /** 导航条全透明（不是默认的 90% 白 scrim） */
         private const val TRANSPARENT_SCRIM = 0x00000000
     }
@@ -105,8 +104,13 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
             tabRequest.value = null
         }
     }
-    // 助手页的回执卡上点「打开」：订那段会话再进去
+    // 助手页的回执卡上点「打开」、以及侧栏里点会话：订那段会话再进去
     fun openConversation(id: String) {
+        // 演示数据里没有真的 RPC（点进去只会报未连接），直接就进去看
+        if (Demo.active) {
+            showChat = true
+            return
+        }
         scope.launch {
             runCatching { model.client.subscribeConversation(id) }
                 .onSuccess { showChat = true }

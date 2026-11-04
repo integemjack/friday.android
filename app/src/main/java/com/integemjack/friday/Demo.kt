@@ -20,11 +20,16 @@ object Demo {
     @Volatile
     var startInChat: Boolean = false
 
+    /** 演示数据已经装上了（这个进程里所有 RPC 都是假的） */
+    @Volatile
+    var active: Boolean = false
+
     /** 返回这次要用的场景名（没传 --es demo 就是空串，一切照常） */
     fun apply(model: AppModel, scene: String?): String {
         if (!BuildConfig.DEBUG || scene.isNullOrBlank()) return ""
         val fill = hook ?: return ""
         startInChat = scene.startsWith("chat")
+        active = true
         fill(model, scene)
         return scene
     }
