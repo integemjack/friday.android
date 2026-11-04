@@ -1379,17 +1379,99 @@ class UiRenderTest {
     // MARK: 登录页 / 选机器人 / 设置里的账号
 
     @Test
-    fun `没登录时一打开就是登录页，没装 SChat 时给二维码，其他方式折着`() {
-        // 登录页 0.6 秒后会去建扫码会话（真网络）：测试里时钟不走，只看排版
+    fun `新装的 App 没登录时先是选服务器，没有默认服务器，直接摆着添加的表单`() {
         compose.mainClock.autoAdvance = false
         render(AppModel(app)) { com.integemjack.friday.AppRoot(kotlinx.coroutines.flow.MutableStateFlow(null)) }
         compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithText("选择服务器").assertExists()
+        compose.onNodeWithText("先添加一台 SChat 聊天服务器，再用它登录").assertExists()
+        compose.onNodeWithText("服务器地址（如 1.2.3.4:2012）").assertExists()
+        compose.onNodeWithText("添加并登录").assertExists()
+        // 一台都没有：表单收不起来；也没有偷偷填好的地址
+        assertNoText("取消")
+        assertEquals(0, compose.onAllNodesWithText("47.100.98.3", substring = true).fetchSemanticsNodes().size)
+        // 登录页、主框架都还不在
+        assertNoText("登录 Friday")
+        assertNoDescription("打开侧边栏")
+    }
+
+    @Test
+    fun `选了加过的服务器才到登录页，没装 SChat 时给二维码，返回回到选服务器`() {
+        // 登录页 0.6 秒后会去建扫码会话（真网络）：测试里时钟不走，只看排版
+        compose.mainClock.autoAdvance = false
+        val model = AppModel(app)
+        model.schat.saveServer("10.0.0.8:2012", "公司", "")
+        model.schat.saveServer("http://192.168.1.5:3000", "", "")
+        render(model) { com.integemjack.friday.AppRoot(kotlinx.coroutines.flow.MutableStateFlow(null)) }
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithText("选择服务器").assertExists()
+        compose.onNodeWithText("公司").assertExists()
+        compose.onNodeWithText("10.0.0.8:2012").assertExists()
+        compose.onNodeWithText("192.168.1.5:3000").assertExists()
+        compose.onNodeWithText("添加服务器").assertExists()
+        assertNoText("登录 Friday")
+
+        compose.onNodeWithText("公司").performClick()
+        compose.mainClock.advanceTimeByFrame()
         compose.onNodeWithText("登录 Friday").assertExists()
+        compose.onNodeWithText("公司 · 10.0.0.8:2012").assertExists()
         compose.onNodeWithText("打开手机上的 SChat → 扫一扫，扫这个码").assertExists()
         compose.onNodeWithText("其他方式").assertExists()
         assertNoText("通过 SChat 登录")
-        // 主框架（侧栏、助手页）不在
+        // 服务器在前一页选好了：「其他方式」里不再有服务器的输入框
+        compose.onNodeWithText("其他方式").performClick()
+        // 别走到 0.6 秒（会去建扫码会话）：展开的内容第一帧就在树里了
+        compose.mainClock.advanceTimeBy(300)
+        compose.onNodeWithText("账号（用户名 / 手机号）").assertExists()
+        assertNoText("聊天服务器（IP:端口，可带 https://）")
+        assertNoText("服务器密码（私有服务器才要填）")
         assertNoDescription("打开侧边栏")
+
+        compose.onNodeWithContentDescription("换服务器").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithText("选择服务器").assertExists()
+        assertNoText("登录 Friday")
+    }
+
+    @Test
+    fun `服务器列表：地址规整、同地址不重复、改地址原地换、删掉`() {
+        // 服务器密码要过 Android Keystore 加密（Robolectric 里没有）：这里都不带密码
+        val schat = AppModel(app).schat
+        val a = schat.saveServer(" 10.0.0.8:2012/ ", "", "")!!
+        assertEquals("https://10.0.0.8:2012", a.address)
+        schat.saveServer("http://192.168.1.5:3000", "家里", "")
+        // 同一个地址再加：改名字，不多一条
+        schat.saveServer("https://10.0.0.8:2012", "公司", "")
+        assertEquals(listOf("公司", "家里"), schat.servers.value.map { it.title })
+        // 改地址：还在原来的位置
+        schat.saveServer("10.0.0.9:2012", "公司", "", replacing = "https://10.0.0.8:2012")
+        assertEquals(listOf("https://10.0.0.9:2012", "http://192.168.1.5:3000"), schat.servers.value.map { it.address })
+        schat.removeServer("http://192.168.1.5:3000")
+        assertEquals(listOf("https://10.0.0.9:2012"), schat.servers.value.map { it.address })
+        // 落了盘：重开 App 还在
+        assertEquals(listOf("https://10.0.0.9:2012"), com.integemjack.friday.data.SchatStore(app).loadServers().map { it.address })
+        assertEquals(null, schat.saveServer("   ", "", ""))
+    }
+
+    @Test
+    fun `老版本记着的那一台服务器升级后挪进服务器列表`() {
+        app.getSharedPreferences("schat", Context.MODE_PRIVATE).edit()
+            .putString("server", "https://47.100.98.3:2012")
+            .putString("fingerprint", "abc")
+            .putString("device_id", "dev-1")
+            .commit()
+        val servers = com.integemjack.friday.data.SchatStore(app).loadServers()
+        assertEquals(1, servers.size)
+        assertEquals("https://47.100.98.3:2012", servers[0].address)
+        assertEquals("abc", servers[0].fingerprint)
+        assertEquals("dev-1", servers[0].deviceId)
+        // 上次用的就是它：选服务器那一页标出来
+        compose.mainClock.autoAdvance = false
+        val model = AppModel(app)
+        model.schat.restore() // 没有凭据：只把上次用的服务器读出来
+        render(model) { ServerPickerScreen(onPicked = {}) }
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithText("上次用的").assertExists()
     }
 
     @Test

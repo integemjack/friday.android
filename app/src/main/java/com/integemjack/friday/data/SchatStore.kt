@@ -10,6 +10,14 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 
 /** SChat 登录会话（REMOTE.md §2：工作通道认 SChat 主人身份） */
 data class SchatSession(
@@ -34,12 +42,106 @@ data class SchatSession(
 )
 
 /**
+ * 加过的一台聊天服务器：登录前先在「选服务器」那一页选它（或者新加一台），登录页只管登这一台。
+ *
+ * [fingerprint] / [deviceId] 跟着服务器走：换到别的服务器再换回来，证书指纹（TOFU）和这台手机在那边的设备 id 都还在
+ */
+data class SavedServer(
+    /** 规整过的地址，如 https://47.100.98.3:2012（同一台服务器认它） */
+    val address: String,
+    /** 自己起的名字（可空，空着就显示地址） */
+    val name: String = "",
+    /** 服务器密码（X-Server-Password，私有服务器才要；加密存） */
+    val serverPassword: String = "",
+    val fingerprint: String = "",
+    val deviceId: String = "",
+) {
+    val host: String get() = address.removePrefix("https://").removePrefix("http://")
+    val title: String get() = name.ifBlank { host }
+}
+
+/**
  * SChat 会话存储：SharedPreferences + Android Keystore（AES/GCM）加密密码与令牌。
  *
  * 令牌就是登录凭据（Bearer），和密码一样加密存；证书指纹不加密（它本来就是要给人核对的）。
  */
 class SchatStore(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("schat", Context.MODE_PRIVATE)
+
+    /** 上次登录用的那台服务器（退出登录也留着，选服务器那一页标「上次用的」） */
+    fun lastServer(): String = prefs.getString(KEY_SERVER, null).orEmpty()
+
+    /**
+     * 加过的服务器。老版本只记一台（[KEY_SERVER]）：列表还空着时把它挪进来，升级上来的人不用重填
+     */
+    fun loadServers(): List<SavedServer> {
+        val raw = prefs.getString(KEY_SERVERS, null)
+        if (raw == null) {
+            val legacy = load() ?: return emptyList()
+            val seeded = listOf(
+                SavedServer(
+                    address = legacy.server,
+                    serverPassword = legacy.serverPassword,
+                    fingerprint = legacy.fingerprint,
+                    deviceId = legacy.deviceId,
+                )
+            )
+            saveServers(seeded)
+            return seeded
+        }
+        val array = runCatching { Json.parseToJsonElement(raw) as? JsonArray }.getOrNull() ?: return emptyList()
+        return array.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val address = obj.text("address").ifBlank { return@mapNotNull null }
+            SavedServer(
+                address = address,
+                name = obj.text("name"),
+                serverPassword = obj.text("passwordEnc").ifEmpty { null }?.let { decrypt(it) }.orEmpty(),
+                fingerprint = obj.text("fingerprint"),
+                deviceId = obj.text("deviceId"),
+            )
+        }
+    }
+
+    fun saveServers(servers: List<SavedServer>) {
+        val array = buildJsonArray {
+            servers.forEach { s ->
+                add(
+                    buildJsonObject {
+                        put("address", s.address)
+                        put("name", s.name)
+                        if (s.serverPassword.isNotEmpty()) put("passwordEnc", encrypt(s.serverPassword))
+                        put("fingerprint", s.fingerprint)
+                        put("deviceId", s.deviceId)
+                    }
+                )
+            }
+        }
+        prefs.edit().putString(KEY_SERVERS, array.toString()).apply()
+    }
+
+    private fun JsonObject.text(key: String): String = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+    /** 登录态落盘时，把证书指纹 / 设备 id 也记到服务器列表里那一台上（没变就不写） */
+    private fun rememberIdentity(session: SchatSession) {
+        val servers = loadServers()
+        val index = servers.indexOfFirst { it.address == session.server }
+        val updated = if (index < 0) {
+            servers + SavedServer(
+                address = session.server,
+                serverPassword = session.serverPassword,
+                fingerprint = session.fingerprint,
+                deviceId = session.deviceId,
+            )
+        } else {
+            val old = servers[index]
+            if (old.fingerprint == session.fingerprint && old.deviceId == session.deviceId) return
+            servers.toMutableList().also {
+                it[index] = old.copy(fingerprint = session.fingerprint, deviceId = session.deviceId)
+            }
+        }
+        saveServers(updated)
+    }
 
     fun load(): SchatSession? {
         val server = prefs.getString(KEY_SERVER, null)?.takeIf { it.isNotBlank() } ?: return null
@@ -79,6 +181,7 @@ class SchatStore(context: Context) {
                 else remove(KEY_SERVER_PASSWORD)
             }
             .apply()
+        rememberIdentity(session)
     }
 
     /** 只改「上次连的机器人」，其余字段不动（连接成功后落一次） */
@@ -142,6 +245,7 @@ class SchatStore(context: Context) {
     companion object {
         private const val ALIAS = "friday_schat_store"
         private const val KEY_SERVER = "server"
+        private const val KEY_SERVERS = "servers"
         private const val KEY_USERNAME = "username"
         private const val KEY_PASSWORD = "password_enc"
         private const val KEY_SERVER_PASSWORD = "server_password_enc"

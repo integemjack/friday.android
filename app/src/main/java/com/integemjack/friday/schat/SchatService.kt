@@ -1,5 +1,6 @@
 package com.integemjack.friday.schat
 
+import com.integemjack.friday.data.SavedServer
 import com.integemjack.friday.data.SchatSession
 import com.integemjack.friday.data.SchatStore
 import com.integemjack.friday.proto.WorkSignaling
@@ -35,7 +36,8 @@ class SchatService(
         val error: String? = null,
         val userId: Long = 0,
         val bots: List<SchatBot> = emptyList(),
-        val server: String = DEFAULT_SERVER,
+        /** 登录着的（没登录时是上次用的）那台聊天服务器；没有默认值，登录前要先选 / 加一台 */
+        val server: String = "",
         val username: String = "",
         val serverPassword: String = "",
         /** 有登录凭据（能直接连，不用重新输密码） */
@@ -80,6 +82,73 @@ class SchatService(
     private var handlingKick = false
     private var iceCache: Pair<List<IceServerConfig>, Long>? = null
     private val routes = CopyOnWriteArrayList<WorkRoute>()
+
+    // MARK: 聊天服务器列表（登录前先选一台）
+
+    private val _servers = MutableStateFlow(store.loadServers())
+
+    /** 加过的聊天服务器：选服务器那一页列它们，登录页只登选中的那台 */
+    val servers: StateFlow<List<SavedServer>> = _servers.asStateFlow()
+
+    /**
+     * 加一台（[replacing] 不为空 = 改那一台）。同一个地址已经有了就改它的名字和密码。
+     * 地址没变时证书指纹、设备 id 留着；改了地址就当是另一台服务器
+     */
+    fun saveServer(addressRaw: String, name: String, serverPassword: String, replacing: String? = null): SavedServer? {
+        val address = normalizeServer(addressRaw)
+        if (address.isEmpty()) return null
+        val current = store.loadServers()
+        val same = current.firstOrNull { it.address == address }
+        val entry = SavedServer(
+            address = address,
+            name = name.trim(),
+            serverPassword = serverPassword.trim(),
+            fingerprint = same?.fingerprint.orEmpty(),
+            deviceId = same?.deviceId.orEmpty(),
+        )
+        // 改的那台（或同地址的那台）原地换掉；新的排最后
+        val slot = current.indexOfFirst { it.address == (replacing ?: address) }
+        val list = current.filterNot { it.address == address || it.address == replacing }.toMutableList()
+        list.add(if (slot < 0) list.size else minOf(slot, list.size), entry)
+        store.saveServers(list)
+        _servers.value = list
+        return entry
+    }
+
+    fun removeServer(address: String) {
+        val list = store.loadServers().filterNot { it.address == address }
+        store.saveServers(list)
+        _servers.value = list
+    }
+
+    /** 加服务器时先探一下：连得上返回 null，连不上 / 被拒了返回一句原因 */
+    suspend fun probeServer(addressRaw: String, serverPassword: String): String? {
+        val address = normalizeServer(addressRaw)
+        if (address.isEmpty()) return "先填服务器地址"
+        return try {
+            val result = SchatHttp.get(address, "/server-info", serverPassword = serverPassword.trim().ifBlank { null })
+            when (result.status) {
+                401, 403 -> "服务器拒绝了（HTTP ${result.status}），服务器密码对吗？"
+                else -> null
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            "连不上这台服务器：${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    /**
+     * 这台手机在 [server] 上的身份：设备 id + 记着的证书指纹。
+     * 先看登录态里的（同一台），再看服务器列表里记着的，都没有就新起一个设备 id、指纹等第一次见到再记
+     */
+    private fun identity(server: String): Pair<String, String?> {
+        val stored = store.load()?.takeIf { it.server == server }
+        val saved = store.loadServers().firstOrNull { it.address == server }
+        val deviceId = stored?.deviceId?.ifEmpty { null } ?: saved?.deviceId?.ifEmpty { null } ?: UUID.randomUUID().toString()
+        val fingerprint = stored?.fingerprint?.ifEmpty { null } ?: saved?.fingerprint?.ifEmpty { null }
+        return deviceId to fingerprint
+    }
 
     // MARK: 启动 / 恢复
 
@@ -132,8 +201,7 @@ class SchatService(
         )
         val stored = store.load()
         val sameServer = stored != null && stored.server == server
-        val deviceId = stored?.takeIf { sameServer }?.deviceId?.ifEmpty { null } ?: UUID.randomUUID().toString()
-        val knownFingerprint = stored?.takeIf { sameServer }?.fingerprint?.ifEmpty { null }
+        val (deviceId, knownFingerprint) = identity(server)
         try {
             val (payload, fingerprint) = SchatHttp.login(
                 server = server,
@@ -173,6 +241,7 @@ class SchatService(
     private fun adopt(fresh: SchatSession) {
         session = fresh
         store.save(fresh)
+        _servers.value = store.loadServers()
         _state.value = _state.value.copy(
             phase = Phase.Connecting,
             status = "登录成功，连接聊天服务器…",
@@ -241,8 +310,7 @@ class SchatService(
         _qrLogin.value = QrLogin.Starting
         val stored = store.load()
         val sameServer = stored != null && stored.server == server
-        val deviceId = stored?.takeIf { sameServer }?.deviceId?.ifEmpty { null } ?: UUID.randomUUID().toString()
-        val known = stored?.takeIf { sameServer }?.fingerprint?.ifEmpty { null }
+        val (deviceId, known) = identity(server)
         val password = serverPassword.ifBlank { null }
         try {
             val (info, seen) = SchatHttp.serverInfo(server, password, known)
@@ -560,9 +628,6 @@ class SchatService(
     }
 
     companion object {
-        /** 默认的 chatserver（私服地址，用户在设置里能改） */
-        const val DEFAULT_SERVER = "https://47.100.98.3:2012"
-
         private val BACKOFF_MS = longArrayOf(1_000, 2_000, 5_000, 10_000, 20_000, 30_000)
     }
 }

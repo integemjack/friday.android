@@ -25,7 +25,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -35,10 +38,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -60,7 +66,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.integemjack.friday.data.SavedServer
 import com.integemjack.friday.schat.SchatService
 import com.integemjack.friday.ui.theme.LocalFridayExtra
 import kotlinx.coroutines.delay
@@ -74,20 +82,23 @@ import kotlinx.coroutines.launch
  * - 没装（或装的 SChat 还不认这个链接）→ 一个二维码 `SCSH:1:login:<token>`：用另一台手机上的 SChat 扫一扫、确认
  * - 两条都是同一套 login-sessions（Secret-Chat docs/qr_login_plan.md）：确认页显示是哪台设备在登录，
  *   凭据在这边领取时才签发
- * - 最下面折着「其他方式」：改聊天服务器（私有服务器）、账号密码登录（老服务端没有扫码登录时也走这条）
+ * - 最下面折着「其他方式」：账号密码登录（老服务端没有扫码登录时也走这条）
+ *
+ * 登哪台聊天服务器在前一页（[ServerPickerScreen]）就选好了：这里只登 [server] 这一台，
+ * 顶上写着是哪台，左上角返回 / 点那一行（[onChangeServer]）回去换。
  *
  * 登录成功（三条路之一）→ AppRoot 换成选机器人那一页。
  */
 @Composable
-fun LoginScreen() {
+fun LoginScreen(server: SavedServer, onChangeServer: () -> Unit) {
     val model = LocalAppModel.current
     val context = LocalContext.current
     val schat by model.schat.state.collectAsState()
     val qr by model.schat.qrLogin.collectAsState()
     val scope = rememberCoroutineScope()
 
-    var server by rememberSaveable { mutableStateOf(schat.server.ifBlank { SchatService.DEFAULT_SERVER }) }
-    var serverPassword by rememberSaveable { mutableStateOf(schat.serverPassword) }
+    val address = server.address
+    val serverPassword = server.serverPassword
     var moreOpen by rememberSaveable { mutableStateOf(false) }
     var showQrAnyway by rememberSaveable { mutableStateOf(false) }
     // 从系统设置 / 应用商店回来（刚装上 SChat）时重新看一眼
@@ -102,10 +113,10 @@ fun LoginScreen() {
         onDispose { lifecycle.lifecycle.removeObserver(observer) }
     }
 
-    // 一进来就备好一次扫码会话（改了服务器停 0.6 秒再重开）；离开这页就作废
-    LaunchedEffect(server, serverPassword) {
+    // 一进来就备好一次扫码会话（停 0.6 秒再开，刚进来又退回去就不白建）；离开这页就作废
+    LaunchedEffect(address, serverPassword) {
         delay(600)
-        model.schat.startQrLogin(server, serverPassword)
+        model.schat.startQrLogin(address, serverPassword)
     }
     DisposableEffect(Unit) { onDispose { model.schat.cancelQrLogin() } }
     // 服务器没有扫码登录：直接把账号密码那块打开
@@ -114,8 +125,10 @@ fun LoginScreen() {
     }
 
     val waiting = qr as? SchatService.QrLogin.Waiting
-    val restart = { model.schat.startQrLogin(server, serverPassword) }
+    val restart = { model.schat.startQrLogin(address, serverPassword) }
 
+    // 这页不在 Surface 里：没写颜色的字/图标默认是纯黑，深色模式下就看不见了
+    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
     Box(
         Modifier
             .fillMaxSize()
@@ -131,8 +144,10 @@ fun LoginScreen() {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(28.dp))
-            Brand()
-            Spacer(Modifier.height(28.dp))
+            Brand("登录 Friday", "用 SChat 账号登录，再选一台你自己的远程 Friday 连上")
+            Spacer(Modifier.height(14.dp))
+            ServerChip(server, onClick = onChangeServer)
+            Spacer(Modifier.height(24.dp))
 
             val useApp = app == SchatApp.Ready && !showQrAnyway
             if (useApp) {
@@ -178,27 +193,54 @@ fun LoginScreen() {
             MoreOptions(
                 open = moreOpen,
                 onToggle = { moreOpen = !moreOpen },
-                server = server,
-                onServer = { server = it },
-                serverPassword = serverPassword,
-                onServerPassword = { serverPassword = it },
                 schat = schat,
                 onLogin = { user, password ->
-                    scope.launch { model.schat.login(server.trim(), user.trim(), password, serverPassword.trim()) }
+                    scope.launch { model.schat.login(address, user.trim(), password, serverPassword) }
                 },
             )
             Spacer(Modifier.height(20.dp))
-            Text(
-                "Friday · v${com.integemjack.friday.BuildConfig.VERSION_NAME}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-            )
+            VersionLine()
         }
+        IconButton(
+            onClick = onChangeServer,
+            modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+        ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "换服务器") }
+    }
     }
 }
 
+/** 登录页顶上那一行：登的是哪台聊天服务器，点一下回去换 */
 @Composable
-private fun Brand() {
+private fun ServerChip(server: SavedServer, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .widthIn(max = 420.dp)
+            .clip(RoundedCornerShape(50))
+            .background(scheme.surfaceContainerLow)
+            .clickable(onClick = onClick)
+            .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Dns, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (server.name.isBlank()) server.host else "${server.name} · ${server.host}",
+            style = MaterialTheme.typography.labelMedium,
+            color = scheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text("换服务器", style = MaterialTheme.typography.labelMedium, color = scheme.primary)
+        Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = scheme.primary, modifier = Modifier.size(16.dp))
+    }
+}
+
+/** 登录前那几页顶上的 Friday 标 + 标题 + 一句说明 */
+@Composable
+internal fun Brand(title: String, subtitle: String) {
     val scheme = MaterialTheme.colorScheme
     val dark = scheme.background.luminance() < 0.5f
     Box(
@@ -211,13 +253,23 @@ private fun Brand() {
         Text("F", style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold), color = scheme.onPrimary)
     }
     Spacer(Modifier.height(14.dp))
-    Text("登录 Friday", style = MaterialTheme.typography.headlineSmall)
+    Text(title, style = MaterialTheme.typography.headlineSmall)
     Spacer(Modifier.height(6.dp))
     Text(
-        "用 SChat 账号登录，再选一台你自己的远程 Friday 连上",
+        subtitle,
         style = MaterialTheme.typography.bodyMedium,
         color = scheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
+    )
+}
+
+/** 登录前那几页最底下的版本号 */
+@Composable
+internal fun VersionLine() {
+    Text(
+        "Friday · v${com.integemjack.friday.BuildConfig.VERSION_NAME}",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
     )
 }
 
@@ -333,15 +385,11 @@ private fun QrStatus(qr: SchatService.QrLogin, scannedText: String, waitingText:
     Text(text, style = MaterialTheme.typography.bodySmall, color = color, textAlign = TextAlign.Center)
 }
 
-/** 折着的「其他方式」：聊天服务器（私有服务器才改）+ 账号密码登录 */
+/** 折着的「其他方式」：账号密码登录（服务器在前一页选好了，这里不再填） */
 @Composable
 private fun MoreOptions(
     open: Boolean,
     onToggle: () -> Unit,
-    server: String,
-    onServer: (String) -> Unit,
-    serverPassword: String,
-    onServerPassword: (String) -> Unit,
     schat: SchatService.State,
     onLogin: (String, String) -> Unit,
 ) {
@@ -366,7 +414,7 @@ private fun MoreOptions(
             Column(Modifier.weight(1f)) {
                 Text("其他方式", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "账号密码登录 · 聊天服务器 ${server.removePrefix("https://").removePrefix("http://")}",
+                    "账号密码登录",
                     style = MaterialTheme.typography.labelSmall,
                     color = scheme.onSurfaceVariant,
                 )
@@ -378,12 +426,6 @@ private fun MoreOptions(
                 Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                FridayField(server, onServer, "聊天服务器（IP:端口，可带 https://）")
-                FridayField(
-                    serverPassword, onServerPassword, "服务器密码（私有服务器才要填）",
-                    options = KeyboardOptions(keyboardType = KeyboardType.Password), password = true,
-                )
-                Spacer(Modifier.height(6.dp))
                 FridayField(username, { username = it }, "账号（用户名 / 手机号）")
                 FridayField(
                     password, { password = it }, "密码",
@@ -394,7 +436,7 @@ private fun MoreOptions(
                 }
                 Spacer(Modifier.height(6.dp))
                 FilledTonalButton(
-                    enabled = server.isNotBlank() && username.isNotBlank() && password.isNotEmpty() && !busy,
+                    enabled = username.isNotBlank() && password.isNotEmpty() && !busy,
                     onClick = { onLogin(username, password) },
                     modifier = Modifier.fillMaxWidth(),
                 ) {

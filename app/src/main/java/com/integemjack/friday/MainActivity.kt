@@ -94,13 +94,22 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     val model = LocalAppModel.current
-    // 没登录：先是登录页；登录了还没选机器人（或者在设置里点了「切换 bot」）：选机器人那一页；
-    // 都有了才是主框架。演示数据（debug 包截图用）不走这道门
+    // 没登录：先选聊天服务器（或加一台），再是登录页；登录了还没选机器人（或者在设置里点了「切换 bot」）：
+    // 选机器人那一页；都有了才是主框架。演示数据（debug 包截图用）不走这道门
     val schat by model.schat.state.collectAsState()
     var switchingBot by rememberSaveable { mutableStateOf(false) }
     if (!Demo.active) {
         if (!schat.hasSession) {
-            com.integemjack.friday.ui.LoginScreen()
+            // 选的是哪台：每次打开 App / 退出登录回来都先停在选服务器那一页
+            var picked by rememberSaveable { mutableStateOf<String?>(null) }
+            val servers by model.schat.servers.collectAsState()
+            val server = servers.firstOrNull { it.address == picked }
+            if (server == null) {
+                com.integemjack.friday.ui.ServerPickerScreen(onPicked = { picked = it.address })
+            } else {
+                BackHandler { picked = null }
+                com.integemjack.friday.ui.LoginScreen(server, onChangeServer = { picked = null })
+            }
             return
         }
         if (schat.lastBotId <= 0L) {
