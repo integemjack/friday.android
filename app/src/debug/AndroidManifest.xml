@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 只在 debug 包里：装一个空 provider，进程启动时把演示数据的实现塞进 Demo.hook -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
+<!-- 只在 debug 包里：装一个空 provider，进程启动时把演示数据的实现塞进 Demo.hook，
+     并且放开明文 HTTP —— 连内网 / 本机跑的测试服务器（http://10.0.2.2:8443 这种）用。
+     release 包不加这一条，明文照旧被系统拦掉。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic">
         <provider
             android:name="com.integemjack.friday.demo.DemoInstallProvider"
             android:authorities="${applicationId}.demo"
