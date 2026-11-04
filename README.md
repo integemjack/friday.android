@@ -8,9 +8,13 @@
   - 长按消息：复制文本 / 复制工具输出；上一轮失败时一键重试（`runner.retry`）
   - 排队消息列出来（暂停时点「接着发」）、每条单独删掉（`runner.resumeQueue` / `runner.removeQueued`）
   - 会话有多个根（多个分支）时只跟最早那条链，点分支切换器可切到其他根
-  - 输入框底行：附件、模型、任务模式（不派 / 需要时派 / 工作流）、思考模式，改的是这段对话的
-    （`runner.setEngine` / `runner.setTeamMode` / `runner.setThinking`，换模型同时记成新对话默认）
-- **助手**：和会话页是同一个输入框，也能带附件（`file.upload` 后 `assistant.say` 带路径）；
+  - 输入框左下角「＋」：附件、模型（每个下面写那家的余额 / 套餐用量，`services.usage`）、任务模式（不派 / 需要时派 / 工作流）、
+    思考模式、工作目录（最近选过的 / 默认 / 浏览远程目录 `fs.list`），改的是这段对话的
+    （`runner.setEngine` / `setTeamMode` / `setThinking` / `setWorkingDirectory`，换模型同时记成新对话默认）
+  - 在跑时能**工作补充**：停止键一直在，打了字多一颗「补充给智能体」（做完当前这一步就交给它），补进去的消息标「工作中补充」
+  - 框里空着时右边默认是**语音键**（手机自带的语音识别，边说边出字，说完看一眼再发）
+- **助手**：和会话页是同一个输入框，也能带附件（`file.upload` 后 `assistant.say` 带路径）；「＋」里有**视频通话**：
+  直接打给这台的助手（SChat 机器人通话 `callType: video`，Opus + H.264，和工作通道各用各的 PeerConnection）；
   模型 = 助手开会话 / 插话用的（`sessionEngineID`），任务模式 = 这台新对话的默认（`settings.update teamMode`），
   思考模式 = 助手大脑开不开深度思考（`brainThinking`）
 - **媒体**：消息里的图片直接显示、点开全屏缩放看；看图 / 看视频 / 听录音的工具卡片内嵌媒体；
@@ -61,7 +65,7 @@ JSON-RPC 2.0（协议见 `Friday/qt/docs/REMOTE.md` §2）。
 ```bash
 ./gradlew assembleDebug    # 调试包
 ./gradlew assembleRelease  # 正式包（需 FRIDAY_KEYSTORE_* 环境变量，缺省退化为未签名）
-./gradlew testDebugUnitTest  # 单元 + 界面测试（79 个，JVM 上跑，不用设备）
+./gradlew testDebugUnitTest  # 单元 + 界面测试（92 个，JVM 上跑，不用设备）
 ./gradlew lintDebug        # lint（CI 闸门）
 bash tools/test-bump-version.sh   # bump 逻辑测试
 ```

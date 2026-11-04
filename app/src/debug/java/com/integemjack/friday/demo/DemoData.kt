@@ -16,6 +16,9 @@ import com.integemjack.friday.proto.ChatState
 import com.integemjack.friday.proto.ConnState
 import com.integemjack.friday.proto.ConversationSummary
 import com.integemjack.friday.proto.EngineInfo
+import com.integemjack.friday.proto.RecentDirectory
+import com.integemjack.friday.proto.UsageInfo
+import com.integemjack.friday.proto.UsageLine
 import com.integemjack.friday.proto.FridayState
 import com.integemjack.friday.proto.GenerationStats
 import com.integemjack.friday.proto.JournalEntry
@@ -46,6 +49,7 @@ import kotlinx.serialization.json.put
  *   activity      活动页（在跑的会话 + 待确认的调用 / 提问）
  *   assistant     助手页（时间线：用户 / 助手 / 工具 / 回执 / 说明 + 状态板 + 渠道）
  *   assistant-off 助手页（还没打开那个样子）
+ *   assistant-call 跟助手视频通话的那一页（接通中）
  *   settings      设置页
  */
 object DemoData {
@@ -56,6 +60,17 @@ object DemoData {
     fun fill(model: AppModel, scene: String) {
         val state = build(scene)
         model.client.state.value = state
+        // assistant-call：通话页（接通 2 分钟的样子），看排版用
+        if (scene == "assistant-call") {
+            model.call.showDemo(
+                com.integemjack.friday.call.AssistantCall.State(
+                    phase = com.integemjack.friday.call.AssistantCall.Phase.Active,
+                    video = true,
+                    peerName = "Friday 个人助理",
+                    connectedAt = System.currentTimeMillis() - 125_000,
+                )
+            )
+        }
         // 演示模式下真实流程（自动拨号失败、订阅失败…）可能把状态改回去：兜回来
         if (watching) return
         watching = true
@@ -92,6 +107,12 @@ object DemoData {
         engines = engines,
         defaultEngineID = "claude-sonnet-4.5",
         defaultTeamMode = "delegatesHeavy",
+        usage = usage,
+        directories = listOf(
+            RecentDirectory("/Users/ultra/Desktop/works/friday-android", true),
+            RecentDirectory("/Users/ultra/Desktop/works/friday-desktop-work", true),
+            RecentDirectory("/Users/ultra/Desktop/old-project", false),
+        ),
         chat = when (scene) {
             "chat" -> chat(generating = false)
             "chat-running" -> chat(generating = true)
@@ -113,10 +134,19 @@ object DemoData {
     private const val CHAT_ID = "A1"
 
     private val engines = listOf(
-        EngineInfo("claude-sonnet-4.5", "Anthropic", "claude-sonnet-4.5"),
-        EngineInfo("gpt-5", "OpenAI", "gpt-5"),
-        EngineInfo("glm-4.6", "智谱", "glm-4.6"),
-        EngineInfo("qwen3-local", "本机 friday-llm", "qwen3-30b-a3b"),
+        EngineInfo("claude-sonnet-4.5", "Anthropic", "claude-sonnet-4.5", baseURL = "https://api.anthropic.com", apiKeySecret = "ANTHROPIC_API_KEY"),
+        EngineInfo("gpt-5", "OpenRouter", "gpt-5", baseURL = "https://openrouter.ai/api/v1", apiKeySecret = "OPENROUTER_API_KEY"),
+        EngineInfo("glm-4.6", "智谱编程套餐", "glm-4.6", baseURL = "https://open.bigmodel.cn/api/coding/paas/v4", apiKeySecret = "ZHIPU_API_KEY"),
+        EngineInfo("deepseek-chat", "DeepSeek", "deepseek-chat", baseURL = "https://api.deepseek.com", apiKeySecret = "DEEPSEEK_API_KEY"),
+        EngineInfo("qwen3-local", "本机 friday-llm", "qwen3-30b-a3b", baseURL = "power://friday-llm"),
+    )
+
+    /** 模型菜单里每家下面那一句（演示：checkedAt 写到很远，打开菜单时不会去真查） */
+    private val usage = mapOf(
+        engines[0].usageKey to UsageInfo(line = UsageLine("5 小时剩 64% · 每周剩 81%", false), checkedAt = Long.MAX_VALUE),
+        engines[1].usageKey to UsageInfo(line = UsageLine("累计已用 $3.42", false), checkedAt = Long.MAX_VALUE),
+        engines[2].usageKey to UsageInfo(line = UsageLine("额度用完，15:20 恢复", true), checkedAt = Long.MAX_VALUE),
+        engines[3].usageKey to UsageInfo(line = UsageLine("余额 ¥12.34", false), checkedAt = Long.MAX_VALUE),
     )
 
     private val summaries = listOf(

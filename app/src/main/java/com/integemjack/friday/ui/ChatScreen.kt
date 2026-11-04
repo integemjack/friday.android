@@ -30,6 +30,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
@@ -218,14 +223,16 @@ class ChatDrafts {
 }
 
 /**
- * 会话页的输入框：[Composer]，工具行是 ＋附件、模型、任务模式、思考模式（跟助手页同一套），
- * 上面挂排队、重试、附件三样。
+ * 会话页的输入框：[Composer]，左下角「＋」点出底部面板（附件、模型、任务模式、思考模式、工作目录），
+ * 上面挂排队、重试、附件三样。框里空着时右边默认是语音键。
  *
- * 跟助手页同一套规则：生成中且输入框空着，右边是「停止」；打了字就是「发送」（远程那边排队，
- * 上面的排队条会把它列出来）。
+ * 在跑的时候：红色停止一直在；框里有话时旁边多一颗「补充给智能体」——不打断它，做完当前这一步就把这句交给它
+ * （runner.submit 不带 whenBusy，服务端 == 输入框；同桌面端 / Qt 的「补充给智能体」双键），
+ * 补进去的那条消息在会话里标「工作中补充」。
  *
- * 模型 / 任务模式 / 思考模式改的都是这段对话的（runner.setEngine / setTeamMode / setThinking；
- * 工作中换的下一轮生效），换模型同时记成新对话的默认（同桌面端）。
+ * 模型 / 任务模式 / 思考模式 / 工作目录改的都是这段对话的（runner.setEngine / setTeamMode / setThinking /
+ * setWorkingDirectory；工作中换的下一轮生效），换模型同时记成新对话的默认（同桌面端）。
+ * 模型列表里每个下面写着那家的余额 / 套餐用量（services.usage，打开那页时查）。
  */
 @Composable
 fun ChatComposer(drafts: ChatDrafts) {
@@ -236,24 +243,37 @@ fun ChatComposer(drafts: ChatDrafts) {
     val scope = rememberCoroutineScope()
     val draft = drafts.of(chat?.id ?: "")
     val pickers = rememberAttachmentPickers(draft)
+    val voice = rememberVoiceInput(draft)
     var sendError by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var sheetOpen by remember { mutableStateOf(false) }
 
     val uploading = draft.uploading
     val readyPaths = draft.readyPaths
     val generating = runtime?.generating == true
     val empty = draft.isEmpty
+    val id = chat?.id
 
-    // 这段对话现在的模型 / 任务模式 / 思考档位
-    val summary = state.summaries.firstOrNull { it.id == chat?.id }
+    // 这段对话现在的模型 / 任务模式 / 思考档位 / 工作目录
+    val summary = state.summaries.firstOrNull { it.id == id }
     val engines = state.usableEngines
     val engineID = summary?.engineID?.takeIf { it.isNotEmpty() } ?: runtime?.engineID ?: state.defaultEngineID
     val engine = engines.firstOrNull { it.id == engineID }
-    val teamMode = summary?.teamMode ?: state.defaultTeamMode
+    val teamMode = normalizeTeamMode(summary?.teamMode ?: state.defaultTeamMode)
     val levels = runtime?.thinkingLevels ?: ALL_THINKING_LEVELS
-    val thinking = summary?.thinking ?: runtime?.thinkingLevel
+    val thinking = effectiveThinking(summary?.thinking ?: runtime?.thinkingLevel, levels)
+    val directory = chat?.workingDirectory?.takeIf { it.isNotBlank() }
+    val server = (state.conn as? com.integemjack.friday.proto.ConnState.Connected)?.server
 
     fun change(what: String, block: suspend () -> Unit) {
         scope.launch { runCatching { block() }.onFailure { sendError = "没换成$what" to (it.message ?: "") } }
+    }
+
+    val modelLabel = engine?.label ?: "默认模型"
+    val teamLabel = TEAM_MODES.firstOrNull { it.raw == teamMode }?.short ?: teamMode
+    val thinkingLabel = when {
+        levels.isEmpty() -> "不能调"
+        thinking == null -> "默认"
+        else -> thinkingTitle(thinking, levels)
     }
 
     Composer(
@@ -262,14 +282,18 @@ fun ChatComposer(drafts: ChatDrafts) {
         placeholder = when {
             chat == null -> "先在侧栏里选一段会话"
             uploading -> "附件上传中…"
-            generating -> "接着说会排队（空着点右边是停止）"
+            generating -> "补充给智能体：做完当前这一步就交给它"
             else -> "发消息…"
         },
         enabled = chat != null,
         canSend = !empty && !uploading,
         busy = uploading && !generating,
-        onStop = if (generating && empty) ({ model.client.stop() }) else null,
+        onStop = if (generating) ({ model.client.stop() }) else null,
         stopDescription = "停止",
+        runningSend = RunningSend.Supplement,
+        voice = voice,
+        onMore = { sheetOpen = true },
+        summary = if (chat == null) null else "$modelLabel · $teamLabel · 思考 $thinkingLabel",
         onSend = {
             val text = draft.input.trim()
             if (text.isNotEmpty() || readyPaths.isNotEmpty()) {
@@ -284,35 +308,6 @@ fun ChatComposer(drafts: ChatDrafts) {
                         }
                 }
             }
-        },
-        tools = {
-            val id = chat?.id
-            AttachmentButton(
-                enabled = chat != null,
-                onPickMedia = pickers.pickMedia,
-                onPickFile = pickers.pickFile,
-            )
-            ModelPicker(
-                engines = engines,
-                selectedID = engine?.id,
-                label = engine?.label ?: "默认模型",
-                enabled = id != null,
-                footnote = "只换这段对话的，同时记成新对话的默认；正在跑的下一轮生效",
-                onChoose = { picked -> if (id != null) change("模型") { model.client.setEngine(id, picked) } },
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            TeamModePicker(
-                current = normalizeTeamMode(teamMode),
-                enabled = id != null,
-                footnote = "只换这段对话的，同时记成新对话的默认",
-                onChoose = { mode -> if (id != null) change("任务模式") { model.client.setTeamMode(id, mode) } },
-            )
-            ThinkingPicker(
-                levels = levels,
-                current = thinking,
-                enabled = id != null,
-                onChoose = { level -> if (id != null) change("思考模式") { model.client.setThinking(id, level) } },
-            )
         },
         above = {
             runtime?.let { rt -> QueueBar(rt) }
@@ -336,9 +331,71 @@ fun ChatComposer(drafts: ChatDrafts) {
                     },
                 )
             }
-            AttachmentChips(draft.attachments.toList(), onRemove = { id -> draft.remove(id) })
+            AttachmentChips(draft.attachments.toList(), onRemove = { attachment -> draft.remove(attachment) })
         },
     )
+
+    if (sheetOpen && id != null) {
+        val menu = ComposerMenu(
+            quick = listOf(
+                QuickAction(Icons.Filled.Image, "图片 / 视频", onClick = pickers.pickMedia),
+                QuickAction(Icons.Filled.Description, "文件", onClick = pickers.pickFile),
+            ),
+            rows = listOf(
+                ChoiceRow(
+                    icon = Icons.Filled.AutoAwesome,
+                    title = "模型",
+                    value = modelLabel,
+                    note = engine?.let { state.usage[it.usageKey]?.line },
+                    footnote = "只换这段对话的，同时记成新对话的默认；正在跑的下一轮生效",
+                    choices = engines.map { e ->
+                        val usage = state.usage[e.usageKey]
+                        MenuChoice(
+                            key = e.id,
+                            title = e.label,
+                            detail = e.title.takeIf { it.isNotBlank() && it != e.label },
+                            note = usage?.line,
+                            loading = usage?.loading == true,
+                            selected = e.id == engine?.id,
+                        )
+                    },
+                    emptyText = "这台机器上还没有能用的模型",
+                    onOpen = { model.client.refreshUsage() },
+                    onChoose = { picked -> change("模型") { model.client.setEngine(id, picked) } },
+                ),
+                ChoiceRow(
+                    icon = Icons.Filled.AccountTree,
+                    title = "任务模式",
+                    value = teamLabel,
+                    footnote = "只换这段对话的，同时记成新对话的默认",
+                    choices = TEAM_MODES.map { MenuChoice(it.raw, it.title, it.detail, selected = it.raw == teamMode) },
+                    onChoose = { mode -> change("任务模式") { model.client.setTeamMode(id, mode) } },
+                ),
+                ChoiceRow(
+                    icon = Icons.Filled.Psychology,
+                    title = "思考模式",
+                    value = thinkingLabel,
+                    enabled = levels.isNotEmpty(),
+                    choices = levels.map { MenuChoice(it, thinkingTitle(it, levels), selected = it == thinking) },
+                    emptyText = "这个模型不能调",
+                    onChoose = { level -> change("思考模式") { model.client.setThinking(id, level) } },
+                ),
+                DirectoryRow(
+                    icon = Icons.Filled.Folder,
+                    title = "工作目录",
+                    value = directory?.trimEnd('/', '\\')?.substringAfterLast('/')?.substringAfterLast('\\') ?: "默认",
+                    current = directory,
+                    recent = state.directories,
+                    defaultLabel = server?.defaultWorkingDirectory?.let { "这台的默认：$it" } ?: "这台的默认目录",
+                    onOpen = { model.client.refreshDirectories() },
+                    onChoose = { path -> change("工作目录") { model.client.setWorkingDirectory(id, path) } },
+                    onForget = { path -> scope.launch { model.client.forgetDirectory(path) } },
+                    list = { path -> model.client.listDirectory(path) },
+                ),
+            ),
+        )
+        ComposerSheet(menu, onDismiss = { sheetOpen = false })
+    }
 
     sendError?.let { (title, message) ->
         AlertDialog(
@@ -411,7 +468,11 @@ private fun QueueBar(runtime: Runtime) {
             )
             Spacer(Modifier.width(7.dp))
             Text(
-                if (runtime.queuePaused) "排队已暂停（${queue.size}）" else "排队中（${queue.size}）",
+                when {
+                    runtime.queuePaused -> "排队已暂停（${queue.size}）"
+                    runtime.generating -> "做完这一步就交给它（${queue.size}）"
+                    else -> "排队中（${queue.size}）"
+                },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onTertiaryContainer,
                 modifier = Modifier.weight(1f),
@@ -478,6 +539,10 @@ private fun MessageBubble(
             }
             message.sentBy?.let {
                 Chip("来自 $it", color = MaterialTheme.colorScheme.tertiary)
+            }
+            // 智能体工作时补充进去的：做完当时那一步就交给了它（同桌面端 MessageItem「· 工作中补充」）
+            if (message.interjected) {
+                Chip("工作中补充", color = MaterialTheme.colorScheme.primary)
             }
         }
         if (branch != null && branch.count > 1) Spacer(Modifier.height(4.dp))

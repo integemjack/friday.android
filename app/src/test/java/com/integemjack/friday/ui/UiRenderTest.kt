@@ -258,7 +258,7 @@ class UiRenderTest {
     }
 
     @Test
-    fun `空闲时给发送按钮`() {
+    fun `空闲时框里空着默认是语音键，打了字换成发送`() {
         val model = modelWith(
             FridayState(
                 conn = connected,
@@ -267,8 +267,12 @@ class UiRenderTest {
             )
         )
         renderChat(model)
-        compose.onNodeWithContentDescription("发送").assertIsDisplayed()
+        compose.onNodeWithContentDescription("语音输入").assertIsDisplayed()
+        assertNoDescription("发送")
         assertNoDescription("停止")
+        compose.onNodeWithText("发消息…").performTextInput("你好")
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed()
+        assertNoDescription("语音输入")
     }
 
     @Test
@@ -506,22 +510,33 @@ class UiRenderTest {
     }
 
     @Test
-    fun `会话页生成中打了字也能发（排队），空着才是停止`() {
+    fun `会话在跑时能工作补充：停止一直在，打了字多一颗补充给智能体`() {
         val model = modelWith(
             FridayState(
                 conn = connected,
                 openConversationId = "C1",
                 chat = chatState(
-                    listOf(message("1", "user", listOf(textBlock("b1", "hi")))),
+                    listOf(
+                        message("1", "user", listOf(textBlock("b1", "hi"))),
+                        message("2", "assistant", listOf(textBlock("b2", "在改了")), parent = "1", at = "2026-01-01T00:00:01Z"),
+                        ChatMessage(
+                            id = "3", role = "user", blocks = listOf(textBlock("b3", "顺便把注释也补上")),
+                            createdAt = "2026-01-01T00:00:02Z", parentID = "2", interjected = true,
+                        ),
+                    ),
                     runtime = runtime(generating = true),
                 ),
             )
         )
         renderChat(model)
         compose.onNodeWithContentDescription("停止").assertIsDisplayed()
-        compose.onNodeWithText("接着说会排队（空着点右边是停止）").performTextInput("再补一句")
-        compose.onNodeWithContentDescription("发送").assertIsDisplayed()
-        assertNoDescription("停止")
+        assertNoDescription("补充给智能体")
+        // 工作时补充进去的那条消息标出来
+        compose.onNodeWithText("工作中补充").assertExists()
+
+        compose.onNodeWithText("补充给智能体：做完当前这一步就交给它").performTextInput("再补一句")
+        compose.onNodeWithContentDescription("补充给智能体").assertIsDisplayed()
+        compose.onNodeWithContentDescription("停止").assertIsDisplayed()
     }
 
     @Test
@@ -539,8 +554,9 @@ class UiRenderTest {
             AssistantComposer(draft)
         }
         compose.onNodeWithContentDescription("打断").assertIsDisplayed()
-        compose.onNodeWithText("想插一句？（空着点右边是打断）").performTextInput("#a1b2 先停一下")
+        compose.onNodeWithText("想插一句？打了字点发送就打断它重来").performTextInput("#a1b2 先停一下")
         compose.onNodeWithContentDescription("发送").assertIsDisplayed()
+        compose.onNodeWithContentDescription("打断").assertIsDisplayed()
         compose.onNodeWithText("这条直接发给 #a1b2，不经过助手").assertIsDisplayed()
     }
 
@@ -584,90 +600,111 @@ class UiRenderTest {
         compose.onNodeWithText("1 待确认").assertExists()
     }
 
-    // MARK: 输入框工具行：附件 / 模型 / 任务模式 / 思考模式
+    // MARK: 输入框「＋」面板：附件 / 模型（带余额）/ 任务模式 / 思考模式 / 工作目录 / 视频通话
 
     private val engines = listOf(
-        com.integemjack.friday.proto.EngineInfo("E1", "智谱", "glm-4.6"),
-        com.integemjack.friday.proto.EngineInfo("E2", "Anthropic", "claude-sonnet-4.5"),
+        com.integemjack.friday.proto.EngineInfo("E1", "智谱", "glm-4.6", baseURL = "https://open.bigmodel.cn/api/paas/v4", apiKeySecret = "ZHIPU_KEY"),
+        com.integemjack.friday.proto.EngineInfo("E2", "Anthropic", "claude-sonnet-4.5", baseURL = "https://api.anthropic.com", apiKeySecret = "ANTHROPIC_KEY"),
         com.integemjack.friday.proto.EngineInfo("E3", "关掉的服务", "old-model", disabled = true),
     )
 
-    @Test
-    fun `会话页输入框列出这段对话的模型、任务模式、思考档位，点开能选`() {
-        val model = modelWith(
-            FridayState(
-                conn = connected,
-                engines = engines,
-                defaultEngineID = "E2",
-                summaries = listOf(
-                    ConversationSummary(
-                        id = "C1", title = "测试会话", updatedAt = "2026-01-01T00:00:00Z",
-                        pinned = false, isEmpty = false, hasDraft = false,
-                        engineID = "E1", teamMode = "delegatesHeavy",
-                    )
-                ),
-                openConversationId = "C1",
-                chat = chatState(
-                    listOf(message("1", "user", listOf(textBlock("b1", "hi")))),
-                    runtime = runtime().copy(thinkingLevel = "medium", thinkingLevels = listOf("off", "low", "medium", "high")),
-                ),
-            )
-        )
-        renderChat(model)
-        compose.onNodeWithContentDescription("添加附件").assertIsDisplayed()
-        compose.onNodeWithText("glm-4.6").assertIsDisplayed()
-        compose.onNodeWithText("按需派").assertIsDisplayed()
-        compose.onNodeWithText("中").assertIsDisplayed()
+    private val usage = mapOf(
+        engines[0].usageKey to com.integemjack.friday.proto.UsageInfo(
+            line = com.integemjack.friday.proto.UsageLine("余额 ¥12.34", false), checkedAt = Long.MAX_VALUE,
+        ),
+        engines[1].usageKey to com.integemjack.friday.proto.UsageInfo(
+            line = com.integemjack.friday.proto.UsageLine("额度用完，15:20 恢复", true), checkedAt = Long.MAX_VALUE,
+        ),
+    )
 
-        // 模型菜单：能用的都列，关掉的服务不列
-        compose.onNodeWithText("glm-4.6").performClick()
+    private fun chatWithSettings(levels: List<String>? = listOf("off", "low", "medium", "high")) = modelWith(
+        FridayState(
+            conn = connected,
+            engines = engines,
+            defaultEngineID = "E2",
+            usage = usage,
+            directories = listOf(
+                com.integemjack.friday.proto.RecentDirectory("/home/u/proj", true),
+                com.integemjack.friday.proto.RecentDirectory("/home/u/gone", false),
+            ),
+            summaries = listOf(
+                ConversationSummary(
+                    id = "C1", title = "测试会话", updatedAt = "2026-01-01T00:00:00Z",
+                    pinned = false, isEmpty = false, hasDraft = false,
+                    engineID = "E1", teamMode = "delegatesHeavy",
+                )
+            ),
+            openConversationId = "C1",
+            chat = chatState(
+                listOf(message("1", "user", listOf(textBlock("b1", "hi")))),
+                runtime = runtime().copy(thinkingLevel = "medium", thinkingLevels = levels),
+            ),
+        )
+    )
+
+    @Test
+    fun `会话页输入框底下一行写着模型、任务模式、思考，选择都收在加号里`() {
+        renderChat(chatWithSettings())
+        compose.onNodeWithText("glm-4.6 · 按需派 · 思考 中").assertIsDisplayed()
+        // 工具行上不再有单独的附件 / 模型胶囊
+        assertNoDescription("添加附件")
+
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("图片 / 视频").assertIsDisplayed()
+        compose.onNodeWithText("文件").assertIsDisplayed()
+        compose.onNodeWithText("工作目录").assertIsDisplayed()
+        // 模型那行底下就是当前这家的余额
+        compose.onNodeWithText("余额 ¥12.34").assertIsDisplayed()
+        // 会话页没有视频通话（那是跟助手的）
+        assertNoText("视频通话")
+    }
+
+    @Test
+    fun `模型列表每个下面写着那家的余额或额度，关掉的服务不列`() {
+        renderChat(chatWithSettings())
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("模型").performClick()
+        compose.waitForIdle()
         compose.onNodeWithText("claude-sonnet-4.5").assertIsDisplayed()
         compose.onNodeWithText("Anthropic").assertIsDisplayed()
+        compose.onNodeWithText("额度用完，15:20 恢复").assertIsDisplayed()
+        compose.onNodeWithText("余额 ¥12.34").assertIsDisplayed()
         assertNoText("old-model")
     }
 
     @Test
-    fun `任务模式菜单列三种，思考只有开关两档时写开启关闭，不能调时说清楚`() {
-        val model = modelWith(
-            FridayState(
-                conn = connected,
-                engines = engines,
-                defaultEngineID = "E2",
-                openConversationId = "C1",
-                chat = chatState(
-                    listOf(message("1", "user", listOf(textBlock("b1", "hi")))),
-                    runtime = runtime().copy(thinkingLevel = "high", thinkingLevels = listOf("off", "high")),
-                ),
-            )
-        )
-        renderChat(model)
-        // 没选过模型 / 任务模式：跟新对话的默认（E2）、solo
-        compose.onNodeWithText("claude-sonnet-4.5").assertIsDisplayed()
-        compose.onNodeWithText("开启").assertIsDisplayed()
-        compose.onNodeWithText("不派").performClick()
+    fun `任务模式三种、工作目录列出默认和最近的`() {
+        renderChat(chatWithSettings())
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("任务模式").performClick()
+        compose.waitForIdle()
         compose.onNodeWithText("不派子智能体（默认）").assertIsDisplayed()
         compose.onNodeWithText("需要时派子智能体").assertIsDisplayed()
         compose.onNodeWithText("工作流").assertIsDisplayed()
+        compose.onNodeWithContentDescription("返回").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("工作目录").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("默认目录").assertIsDisplayed()
+        // 现在用的就是 /home/u/proj：页头副标题一处、最近列表里打勾的一处
+        assertEquals(2, compose.onAllNodesWithText("/home/u/proj").fetchSemanticsNodes().size)
+        compose.onNodeWithContentDescription("当前").assertIsDisplayed()
+        compose.onNodeWithText("/home/u/gone（不在了）").assertIsDisplayed()
+        compose.onNodeWithText("浏览这台机器上的目录…").assertIsDisplayed()
     }
 
     @Test
-    fun `这个模型不能调思考时，思考胶囊写不能调`() {
-        val model = modelWith(
-            FridayState(
-                conn = connected,
-                openConversationId = "C1",
-                chat = chatState(
-                    listOf(message("1", "user", listOf(textBlock("b1", "hi")))),
-                    runtime = runtime().copy(thinkingLevels = emptyList()),
-                ),
-            )
-        )
-        renderChat(model)
-        compose.onNodeWithText("不能调").assertIsDisplayed()
+    fun `这个模型不能调思考时写不能调`() {
+        renderChat(chatWithSettings(levels = emptyList()))
+        compose.onNodeWithText("glm-4.6 · 按需派 · 思考 不能调").assertIsDisplayed()
     }
 
     @Test
-    fun `助手页输入框也能加附件，也有模型、任务模式、思考模式`() {
+    fun `助手页加号里有附件和视频通话，模型、任务模式、思考对应助手的设置`() {
         val assistant = AssistantState.fromJson(
             buildJsonObject {
                 put("enabled", true)
@@ -680,7 +717,7 @@ class UiRenderTest {
         )
         val model = modelWith(
             FridayState(
-                conn = connected, assistant = assistant, engines = engines,
+                conn = connected, assistant = assistant, engines = engines, usage = usage,
                 defaultEngineID = "E1", defaultTeamMode = "ultra",
             )
         )
@@ -688,14 +725,18 @@ class UiRenderTest {
             val draft = remember { ComposerDraft() }
             AssistantComposer(draft)
         }
-        compose.onNodeWithContentDescription("添加附件").assertIsDisplayed()
-        // 没选过助手的模型：胶囊上显示新对话的默认
-        compose.onNodeWithText("glm-4.6").assertIsDisplayed()
-        compose.onNodeWithText("工作流").assertIsDisplayed()
-        // brainThinking 是布尔：两档，写「开启」
-        compose.onNodeWithText("开启").assertIsDisplayed()
+        // 没选过助手的模型：显示新对话的默认；brainThinking 是布尔 → 开启
+        compose.onNodeWithText("glm-4.6 · 工作流 · 思考 开启").assertIsDisplayed()
+        compose.onNodeWithContentDescription("语音输入").assertIsDisplayed()
 
-        compose.onNodeWithText("glm-4.6").performClick()
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("图片 / 视频").assertIsDisplayed()
+        compose.onNodeWithText("视频通话").assertIsDisplayed()
+        assertNoText("工作目录")
+
+        compose.onNodeWithText("模型").performClick()
+        compose.waitForIdle()
         compose.onNodeWithText("跟新对话一样").assertIsDisplayed()
         compose.onNodeWithText("现在是 glm-4.6").assertIsDisplayed()
     }

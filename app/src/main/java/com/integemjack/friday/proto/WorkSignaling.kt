@@ -24,6 +24,13 @@ import java.util.concurrent.TimeUnit
 class WorkSignaling(
     private val host: Host,
     private val onEvent: (Event) -> Unit,
+    /**
+     * 打的是哪种：`work`（工作通道，默认）/ `video` / `audio`（打给助手的通话，ASSISTANT.md「通话」，
+     * SChat「机器人通话」）。信令帧一模一样，只有 callType 和给用户看的话不同
+     */
+    private val callType: String = "work",
+    /** 通话时给对方看的来电名（p2p_request 的 callerName；工作通道不带） */
+    private val callerName: String? = null,
     private val timers: Timer = DefaultTimer(),
     private val now: () -> Long = { System.currentTimeMillis() },
     private val newRequestId: () -> String = { UUID.randomUUID().toString() },
@@ -84,7 +91,10 @@ class WorkSignaling(
     private var peerId = 0L
     private var ended = true
     private var accepted = false
+    private var connectedAt = 0L
     private var timer: Timer.Cancel? = null
+
+    private val isCall: Boolean get() = callType != "work"
 
     val isActive: Boolean get() = !ended
 
@@ -106,14 +116,22 @@ class WorkSignaling(
                 put("toUserId", botId)
                 put("fromUserId", host.accountId())
                 put("requestId", requestId)
-                put("callType", "work")
+                put("callType", callType)
                 put("timestamp", at)
                 put("expiresAt", at + 30_000)
+                if (!callerName.isNullOrBlank()) put("callerName", callerName)
             },
         )
         timer = timers.schedule(30_000) {
-            if (!ended) finish("机器人 30 秒内没接受连接（它在线吗？装的是 2.43+ 吗？）")
+            if (!ended) {
+                finish(if (isCall) "助手 30 秒内没接（它的通话连上了吗？）" else "机器人 30 秒内没接受连接（它在线吗？装的是 2.43+ 吗？）")
+            }
         }
+    }
+
+    /** 媒体接通了（通话用：挂断时带上通了多少秒） */
+    fun markConnected() {
+        if (!ended && connectedAt == 0L) connectedAt = now()
     }
 
     /** p2p_response 进来（accepted / declined） */
@@ -126,7 +144,7 @@ class WorkSignaling(
             onEvent(Event.Accepted(requestId))
             return
         }
-        val text = when (reason) {
+        val text = if (isCall) callRejectText(reason) else when (reason) {
             "user_rejected" -> "机器人拒绝了工作连接（不是主人账号？）"
             "not_friends" -> "还没和这个机器人成为好友（或对方还没通过好友请求）：先在 SChat 里加它，等它通过再连"
             "error" -> "机器人那头没有工作服务（装的是 2.43+ 吗？）"
@@ -140,7 +158,12 @@ class WorkSignaling(
         if (ended || requestId != this.requestId) return
         if (type == "hangup" || type == "request_cancel") {
             val replaced = type == "hangup" && reason in REPLACED_REASONS
-            finish(if (replaced) "同一账号的另一台设备把这条连接顶掉了" else "机器人挂断了工作连接", replaced)
+            val text = when {
+                replaced -> "同一账号的另一台设备把这条连接顶掉了"
+                isCall -> if (type == "request_cancel") "助手取消了通话" else "助手挂断了"
+                else -> "机器人挂断了工作连接"
+            }
+            finish(text, replaced)
             return
         }
         onEvent(Event.Signal(requestId, type, payload))
@@ -179,6 +202,10 @@ class WorkSignaling(
                     put("type", if (accepted) "hangup" else "request_cancel")
                     put("payload", "")
                     put("timestamp", now())
+                    // 通话挂断带通了多少秒（对端时间线记「通话结束 · 3 分 05 秒」）
+                    if (isCall && accepted) {
+                        put("durationSec", if (connectedAt > 0) ((now() - connectedAt) / 1000).coerceAtLeast(0) else 0)
+                    }
                 },
             )
         }
@@ -198,8 +225,20 @@ class WorkSignaling(
         timer = null
         ended = true
         accepted = false
+        connectedAt = 0L
         requestId = ""
         peerId = 0L
+    }
+
+    /** 打给助手的通话被拒的原因（== 桌面端 CallService REJECT_TEXT，按助手的语境说） */
+    private fun callRejectText(reason: String): String = when (reason) {
+        "offline" -> "助手现在接不了电话（那台 Friday 的助手没开、或者它的 SChat 通话没连上）"
+        "busy" -> "助手正在另一通电话里"
+        "bot_no_p2p" -> "这个机器人没开通话（那台的设置 › 助手 › 聊天工具 里打开「接我打来的电话」）"
+        "not_friends" -> "还没和这个机器人成为好友"
+        "user_rejected", "decline" -> "助手没接（只接主人打来的，或者关了「接我打来的电话」）"
+        "blocked" -> "对方拒绝了"
+        else -> "助手没接通（$reason）"
     }
 
     companion object {

@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,6 +29,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -46,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
@@ -62,12 +67,16 @@ import java.util.UUID
  *
  * 一整块圆角卡片，上下两行：
  * - 上面是多行输入
- * - 下面一行工具：左边是 [tools]（两页都是 ＋附件、模型、任务模式、思考模式），右边一颗圆形动作按钮
+ * - 下面一行：左边「＋」（[onMore]：附件、模型、任务模式、思考模式、工作目录、视频通话都在它点出来的面板里），
+ *   旁边一行小字 [summary] 写着现在用的模型 · 任务模式 · 思考（点它也是打开面板）；右边是动作按钮
  *
- * 动作按钮三种状态：
- * - [onStop] 不为空 → 停止 / 打断（红底方块，[stopDescription] 是无障碍名）
+ * 动作按钮按状态换：
+ * - 在跑（[onStop] 不为空）→ 红色停止 / 打断；框里有话时旁边再多一颗 [runningSend]
+ *   （会话页是「补充给智能体」：做完当前这一步就交给它，同桌面端 / Qt 的双键）
+ * - 在听写（[voice] 在听）→ 主色的话筒，按一下停
  * - [busy] → 转圈（附件还在传）
- * - 其余 → 发送（能发时主色实心，不能发时灰着）
+ * - 有话可发 → 发送
+ * - 框里空着 → 话筒（[voice]：默认就是语音键）
  *
  * 卡片上面可以挂几条提示（排队、重试、附件、直发说明），由调用方经 [above] 给，
  * 跟卡片同宽、同一套左右留白。
@@ -86,7 +95,10 @@ fun Composer(
     busy: Boolean = false,
     onStop: (() -> Unit)? = null,
     stopDescription: String = "停止",
-    tools: (@Composable RowScope.() -> Unit)? = null,
+    runningSend: RunningSend = RunningSend.Send,
+    voice: VoiceInput? = null,
+    onMore: (() -> Unit)? = null,
+    summary: String? = null,
     above: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -141,7 +153,7 @@ fun Composer(
                     Box {
                         if (value.isEmpty()) {
                             Text(
-                                placeholder,
+                                if (voice?.listening == true) "正在听，说吧…（说完点右边的话筒停）" else placeholder,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = scheme.onSurfaceVariant.copy(alpha = if (enabled) 0.85f else 0.6f),
                                 maxLines = 1,
@@ -158,46 +170,167 @@ fun Composer(
                     .padding(start = 6.dp, end = 6.dp, top = 2.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // 工具（附件 + 三个选择器）靠左排；地方不够时模型那枚先收窄（它自己带 weight）
-                Row(
-                    Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    tools?.invoke(this)
+                if (onMore != null) {
+                    MoreButton(enabled = enabled, onClick = onMore)
+                    Spacer(Modifier.width(6.dp))
                 }
-                Spacer(Modifier.width(6.dp))
-                when {
-                    onStop != null -> ComposerAction(
-                        icon = Icons.Filled.Stop,
-                        description = stopDescription,
-                        container = scheme.errorContainer,
-                        content = scheme.error,
-                        onClick = onStop,
-                    )
-                    busy -> Box(
-                        Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(scheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    }
-                    else -> {
-                        val ready = enabled && canSend
-                        ComposerAction(
-                            icon = Icons.AutoMirrored.Filled.Send,
-                            description = "发送",
-                            container = if (ready) scheme.primary else scheme.surfaceContainerHighest,
-                            content = if (ready) scheme.onPrimary else scheme.onSurfaceVariant.copy(alpha = 0.5f),
-                            enabled = ready,
-                            onClick = onSend,
+                // 现在用的模型 · 任务模式 · 思考：一行小字，点它也是打开面板
+                Text(
+                    summary.orEmpty(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = scheme.onSurfaceVariant.copy(alpha = if (enabled) 0.85f else 0.5f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .then(
+                            if (onMore != null && !summary.isNullOrEmpty()) {
+                                Modifier.clickable(enabled = enabled, onClickLabel = "打开设置", onClick = onMore)
+                            } else {
+                                Modifier
+                            }
                         )
-                    }
-                }
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Actions(
+                    enabled = enabled,
+                    canSend = canSend,
+                    busy = busy,
+                    onSend = onSend,
+                    onStop = onStop,
+                    stopDescription = stopDescription,
+                    runningSend = runningSend,
+                    voice = voice,
+                )
             }
         }
+    }
+}
+
+/** 在跑时、框里有话时多出来的那颗：会话页是补充（做完这一步就交给它），助手页是插话（打断重来） */
+enum class RunningSend(val description: String) {
+    Send("发送"),
+    Supplement("补充给智能体"),
+}
+
+@Composable
+private fun Actions(
+    enabled: Boolean,
+    canSend: Boolean,
+    busy: Boolean,
+    onSend: () -> Unit,
+    onStop: (() -> Unit)?,
+    stopDescription: String,
+    runningSend: RunningSend,
+    voice: VoiceInput?,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val listening = voice?.listening == true
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        when {
+            onStop != null -> {
+                if (listening) MicButton(voice!!, enabled)
+                ComposerAction(
+                    icon = Icons.Filled.Stop,
+                    description = stopDescription,
+                    container = scheme.errorContainer,
+                    content = scheme.error,
+                    onClick = onStop,
+                )
+                if (enabled && canSend && !busy) {
+                    ComposerAction(
+                        icon = if (runningSend == RunningSend.Supplement) Icons.Filled.ArrowUpward else Icons.AutoMirrored.Filled.Send,
+                        description = runningSend.description,
+                        container = scheme.primary,
+                        content = scheme.onPrimary,
+                        onClick = onSend,
+                    )
+                } else if (!listening && voice != null && enabled && !canSend) {
+                    // 在跑、框里空着：停止 + 话筒（说一句补充）
+                    MicButton(voice, enabled)
+                }
+            }
+            listening -> MicButton(voice!!, enabled)
+            busy -> Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(scheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
+            enabled && canSend -> ComposerAction(
+                icon = Icons.AutoMirrored.Filled.Send,
+                description = "发送",
+                container = scheme.primary,
+                content = scheme.onPrimary,
+                onClick = onSend,
+            )
+            voice != null -> MicButton(voice, enabled)
+            else -> ComposerAction(
+                icon = Icons.AutoMirrored.Filled.Send,
+                description = "发送",
+                container = scheme.surfaceContainerHighest,
+                content = scheme.onSurfaceVariant.copy(alpha = 0.5f),
+                enabled = false,
+                onClick = onSend,
+            )
+        }
+    }
+}
+
+/** 语音键：平时是淡主色底的话筒，听着的时候主色实心、外面一圈跟着音量跳 */
+@Composable
+private fun MicButton(voice: VoiceInput, enabled: Boolean) {
+    val scheme = MaterialTheme.colorScheme
+    val listening = voice.listening
+    val ring by animateFloatAsState(if (listening) 1f + voice.level * 0.35f else 1f, tween(90), label = "micRing")
+    Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+        if (listening) {
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .scale(ring)
+                    .clip(CircleShape)
+                    .background(scheme.primary.copy(alpha = 0.22f))
+            )
+        }
+        ComposerAction(
+            icon = Icons.Filled.Mic,
+            description = if (listening) "停止听写" else "语音输入",
+            container = if (listening) scheme.primary else scheme.primary.copy(alpha = 0.12f),
+            content = when {
+                listening -> scheme.onPrimary
+                enabled -> scheme.primary
+                else -> scheme.onSurfaceVariant.copy(alpha = 0.4f)
+            },
+            enabled = enabled,
+            onClick = { voice.toggle() },
+        )
+    }
+}
+
+/** 左下角的「＋」：点开底部面板 */
+@Composable
+private fun MoreButton(enabled: Boolean, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Box(
+        Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(if (enabled) scheme.surfaceContainerHigh else Color.Transparent)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.Add,
+            contentDescription = "更多",
+            tint = if (enabled) scheme.onSurfaceVariant else scheme.onSurfaceVariant.copy(alpha = 0.4f),
+            modifier = Modifier.size(19.dp),
+        )
     }
 }
 

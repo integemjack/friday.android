@@ -47,9 +47,15 @@ class SchatService(
         val online: Boolean get() = phase == Phase.Online
     }
 
-    /** 一条工作通道（一台远程 Friday）在信令层要收的帧 */
+    /**
+     * 信令层的一条线：一条工作通道（一台远程 Friday），或者打给它助手的一通电话。
+     * 同一个机器人上可以同时有一条工作通道和一通电话（各用各的 PeerConnection，按 requestId 分帧）
+     */
     interface WorkRoute {
         val botId: Long
+
+        /** `work` / `video` / `audio`：同一个机器人上同一种只留一条 */
+        val callType: String get() = "work"
 
         /** 这条通道现在这次拨号的 requestId（空闲为空） */
         fun currentRequestId(): String
@@ -363,7 +369,7 @@ class SchatService(
     }
 
     fun addRoute(route: WorkRoute) {
-        routes.removeAll { it.botId == route.botId }
+        routes.removeAll { it.botId == route.botId && it.callType == route.callType }
         routes += route
     }
 
@@ -377,14 +383,17 @@ class SchatService(
         val data = envelope["d"] as? JsonObject ?: return
         if (event != "p2p_response" && event != "p2p_signaling" && event != "p2p_request") return
         val from = data.long("fromUserId") ?: 0
-        val route = routes.firstOrNull { it.botId == from } ?: return
+        val mine = routes.filter { it.botId == from }
+        if (mine.isEmpty()) return
         if (event == "p2p_request") {
-            if (data.str("callType") == "work") route.onWorkFrame(event, data)
+            val type = data.str("callType")
+            mine.firstOrNull { it.callType == type }?.onWorkFrame(event, data)
             return
         }
-        // 只认自己这次拨号的 requestId，别把同一台机器的语音通话信令截走
+        // 只认自己这次拨号的 requestId：同一台机器的工作通道和通话各收各的
         val requestId = data.str("requestId").orEmpty()
-        if (requestId.isNotEmpty() && requestId == route.currentRequestId()) route.onWorkFrame(event, data)
+        if (requestId.isEmpty()) return
+        mine.firstOrNull { it.currentRequestId() == requestId }?.onWorkFrame(event, data)
     }
 
     // MARK: ICE

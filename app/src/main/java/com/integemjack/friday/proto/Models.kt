@@ -616,7 +616,14 @@ data class EngineInfo(
     val model: String,
     /** 关掉的服务的模型：配置留着，模型菜单里不列 */
     val disabled: Boolean = false,
+    /** 接口地址（查余额 / 用量按它 + 密钥名；本机地址不查） */
+    val baseURL: String = "",
+    /** 密钥的名字（值不出那台） */
+    val apiKeySecret: String = "",
 ) {
+    /** 查余额用的键（同一家的几个模型共用一份） */
+    val usageKey: String get() = usageKey(baseURL, apiKeySecret)
+
     /** 选择器上显示的名字：模型名优先，没有就引擎名 */
     val label: String get() = model.ifBlank { title }.ifBlank { "默认模型" }
 
@@ -626,9 +633,26 @@ data class EngineInfo(
             title = o.str("title") ?: "",
             model = o.str("model") ?: "",
             disabled = o.bool("disabled") ?: false,
+            baseURL = o.str("baseURL") ?: "",
+            apiKeySecret = o.str("apiKeySecret") ?: "",
         )
     }
 }
+
+/** 最近选过的一个工作目录（DirectoriesState.recent；exists 按发出时看） */
+data class RecentDirectory(val path: String, val exists: Boolean)
+
+/** 这台机器上一层目录（fs.list 的回执：选工作目录时浏览用） */
+data class FsListing(
+    val path: String,
+    val parent: String?,
+    val entries: List<FsEntry>,
+    /** 主目录和各个盘（Linux 是 /） */
+    val roots: List<FsEntry>,
+    val truncated: Boolean,
+)
+
+data class FsEntry(val name: String, val path: String)
 
 /** EnginesState：`{engines: [EngineConfig], defaultEngineID?}`（hello 的 state.engines、engines 事件） */
 data class EnginesState(val engines: List<EngineInfo>, val defaultEngineID: String?) {

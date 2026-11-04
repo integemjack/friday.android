@@ -2,6 +2,7 @@ package com.integemjack.friday.proto
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -92,11 +93,18 @@ data class FridayState(
     val defaultEngineID: String? = null,
     /** 那台机器的新对话默认任务模式（settings.get 的 teamMode；没取到是 null，按 solo 显示） */
     val defaultTeamMode: String? = null,
+    /** 各家在线服务的余额 / 用量（键 = usageKey(接口地址, 密钥名)；模型菜单里每个模型下面那一句） */
+    val usage: Map<String, UsageInfo> = emptyMap(),
+    /** 这台最近选过的工作目录；null = 旧服务端没有 directories（菜单里不列最近，选了也不记） */
+    val directories: List<RecentDirectory>? = null,
 ) {
     val connected: Boolean get() = conn is ConnState.Connected
 
     /** 模型菜单里能选的（关掉的服务的模型不列） */
     val usableEngines: List<EngineInfo> get() = engines.filterNot { it.disabled }
+
+    /** 连着的那台有没有这个功能（server.features） */
+    fun hasFeature(name: String): Boolean = (conn as? ConnState.Connected)?.server?.features?.contains(name) == true
 }
 
 /**
@@ -196,12 +204,15 @@ class FridayClient(
             }.orEmpty().sortedWith(compareByDescending<ConversationSummary> { it.pinned }.thenByDescending { it.updatedAt })
             val runner = snapshot?.get("runner")?.let { (it as? JsonObject)?.let { r -> RunnerState.fromJson(r) } }
             val engines = (snapshot?.get("engines") as? JsonObject)?.let { EnginesState.fromJson(it) }
+            val directories = (snapshot?.get("directories") as? JsonObject)?.let { recentDirectories(it) }
             state.value = state.value.copy(
                 conn = ConnState.Connected(server),
                 summaries = summaries,
                 runner = runner,
                 engines = engines?.engines ?: emptyList(),
                 defaultEngineID = engines?.defaultEngineID,
+                directories = directories,
+                usage = emptyMap(),
             )
             // 新对话默认的任务模式只在 settings 里（hello 不带）：不挡着连接，后台取一下
             scope.launch { refreshSettings() }
@@ -293,6 +304,7 @@ class FridayClient(
                 state.value = state.value.copy(summaries = list)
             }
             "runner" -> state.value = state.value.copy(runner = RunnerState.fromJson(params))
+            "directories" -> state.value = state.value.copy(directories = recentDirectories(params))
             "engines" -> {
                 val engines = EnginesState.fromJson((params["engines"] as? JsonObject) ?: params)
                 state.value = state.value.copy(engines = engines.engines, defaultEngineID = engines.defaultEngineID)
@@ -810,6 +822,123 @@ class FridayClient(
         rpc.request("settings.update", buildJsonObject { put("teamMode", mode) })
         state.value = state.value.copy(defaultTeamMode = mode)
     }
+
+    // MARK: 余额 / 用量（REMOTE.md §6「在线服务」services.usage，2.6 起 serviceUsage）
+
+    /**
+     * 查一遍能用的模型那几家的余额 / 套餐用量（同一家的多个模型只查一次，本机地址不查）。
+     * 打开模型菜单时调；30 秒内查过的不重查（[force] 不管）
+     */
+    suspend fun refreshUsage(force: Boolean = false) {
+        val rpc = rpc ?: return
+        if (!state.value.hasFeature("serviceUsage")) return
+        val targets = state.value.usableEngines
+            .filter { it.baseURL.isNotBlank() && !isLocalBaseURL(it.baseURL) }
+            .distinctBy { it.usageKey }
+        val now = System.currentTimeMillis()
+        coroutineScope {
+            targets.forEach { engine ->
+                val key = engine.usageKey
+                val existing = state.value.usage[key]
+                if (existing?.loading == true) return@forEach
+                if (!force && existing != null && now - existing.checkedAt < 30_000) return@forEach
+                setUsage(key) { (it ?: UsageInfo()).copy(loading = true) }
+                launch {
+                    val info = runCatching {
+                        rpc.request("services.usage", buildJsonObject {
+                            put("baseURL", engine.baseURL)
+                            put("secretName", engine.apiKeySecret)
+                            // 客户端没有服务目录：认得的服务照旧（按地址），不认得的当 one-api 这类中转试一次（同桌面端）
+                            put("custom", true)
+                        }).jsonObject
+                    }.fold(
+                        onSuccess = { result ->
+                            UsageInfo(
+                                line = usageMenuLine(result),
+                                error = result.str("error"),
+                                supported = result.bool("supported") == true,
+                                checkedAt = System.currentTimeMillis(),
+                            )
+                        },
+                        onFailure = { UsageInfo(error = it.message, supported = false, checkedAt = System.currentTimeMillis()) },
+                    )
+                    setUsage(key) { info }
+                }
+            }
+        }
+    }
+
+    private fun setUsage(key: String, transform: (UsageInfo?) -> UsageInfo) {
+        synchronized(this) {
+            val map = state.value.usage
+            state.value = state.value.copy(usage = map + (key to transform(map[key])))
+        }
+    }
+
+    // MARK: 工作目录（REMOTE.md §5 DirectoriesState、§6 runner.setWorkingDirectory / fs.list）
+
+    private fun recentDirectories(o: JsonObject): List<RecentDirectory> =
+        (o["recent"] as? JsonArray)?.mapNotNull { element ->
+            (element as? JsonObject)?.let { d ->
+                d.str("path")?.takeIf { it.isNotBlank() }?.let { RecentDirectory(it, d.bool("exists") ?: true) }
+            }
+        }.orEmpty()
+
+    /** 打开目录菜单时重新看一遍最近的那几个还在不在（旧服务端没有 directories 就算了） */
+    suspend fun refreshDirectories() {
+        val rpc = rpc ?: return
+        if (state.value.directories == null) return
+        runCatching { rpc.request("directories.get").jsonObject }
+            .onSuccess { state.value = state.value.copy(directories = recentDirectories(it)) }
+    }
+
+    /**
+     * 换这段对话的工作目录（runner.setWorkingDirectory {conversationID, path?}；path 不写 = 回默认）。
+     * 选了目录同时记进这台的「最近选择」（directories.push），服务端会推 directories 事件
+     */
+    suspend fun setWorkingDirectory(conversationID: String, path: String?) {
+        val rpc = rpc ?: throw Exception("未连接")
+        rpc.request("runner.setWorkingDirectory", buildJsonObject {
+            put("conversationID", conversationID)
+            if (!path.isNullOrBlank()) put("path", path)
+        })
+        updateChat(conversationID) { it.copy(workingDirectory = path) }
+        updateSummary(conversationID) {
+            it.copy(workingDirectory = path, workingDirectoryName = path?.trimEnd('/', '\\')?.substringAfterLast('/')?.substringAfterLast('\\'))
+        }
+        if (!path.isNullOrBlank() && state.value.directories != null) {
+            runCatching { rpc.request("directories.push", buildJsonObject { put("path", path) }) }
+        }
+    }
+
+    /** 从「最近选择」里去掉一个（directories.remove） */
+    suspend fun forgetDirectory(path: String) {
+        val rpc = rpc ?: return
+        runCatching { rpc.request("directories.remove", buildJsonObject { put("path", path) }) }
+        state.value = state.value.copy(directories = state.value.directories?.filterNot { it.path == path })
+    }
+
+    /** 浏览这台机器上的一层子目录（fs.list；不给 path 是主目录） */
+    suspend fun listDirectory(path: String?): FsListing {
+        val rpc = rpc ?: throw Exception("未连接")
+        val o = rpc.request("fs.list", buildJsonObject { if (!path.isNullOrBlank()) put("path", path) }).jsonObject
+        fun entries(key: String): List<FsEntry> = (o[key] as? JsonArray)?.mapNotNull { element ->
+            (element as? JsonObject)?.let { e ->
+                val p = e.str("path") ?: return@let null
+                FsEntry(e.str("name")?.ifBlank { null } ?: p, p)
+            }
+        }.orEmpty()
+        return FsListing(
+            path = o.str("path").orEmpty(),
+            parent = o.str("parent")?.takeIf { it.isNotBlank() },
+            entries = entries("entries"),
+            roots = entries("roots"),
+            truncated = o.bool("truncated") ?: false,
+        )
+    }
+
+    /** 现在连着哪台（打给它的助手要知道机器人 id） */
+    val target: RemoteTarget? get() = lastTarget
 
     private fun updateSummary(id: String, transform: (ConversationSummary) -> ConversationSummary) {
         val list = state.value.summaries

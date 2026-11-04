@@ -27,6 +27,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
@@ -611,26 +617,29 @@ private fun receiptVisual(text: String, status: String, level: String): Pair<Ima
 // MARK: 输入框：跟助手说话
 
 /**
- * 助手页的输入框：跟会话页是**同一个** [Composer]（同样的卡片、同样的 ＋附件 / 模型 / 任务模式 / 思考模式、
- * 同样的发送 / 停止按钮），由 [HomeScaffold] 放进 dock，所以这里不画背景、也不自己算 inset。
+ * 助手页的输入框：跟会话页是**同一个** [Composer]（同样的卡片、左下角「＋」、默认的语音键、
+ * 同样的发送 / 停止），由 [HomeScaffold] 放进 dock，所以这里不画背景、也不自己算 inset。
  *
- * 三个选择器改的是助手这边对应的设置：
+ * 「＋」面板里：图片 / 视频、文件、**视频通话**（直接打给这台的助手，[com.integemjack.friday.call.AssistantCall]），
+ * 下面三行改的是助手这边对应的设置：
  * - 模型：助手下次开会话、往会话里插话用的（AssistantConfig.sessionEngineID，ASSISTANT.md §16.10）；
- *   「跟新对话一样」= 清掉，不动新对话的默认
+ *   「跟新对话一样」= 清掉，不动新对话的默认；每个模型下面写着那家的余额 / 用量
  * - 任务模式：这台新对话的默认（settings.update teamMode），助手新开的会话按它
  * - 思考模式：助手大脑开不开深度思考（AssistantConfig.brainThinking，只有开 / 关）
  *
  * 附件先 file.upload 传到那台，再带着服务端路径 assistant.say（REMOTE.md §6「助手」）。
- * 助手在出字、输入框又空着时，右边是「打断」；打了字就是「发送」（插一句）。
+ * 助手在出字时：红色「打断」一直在；框里有话时旁边多一颗「发送」（插一句：打断它、带上这句重来）。
  * 草稿由调用方（AppRoot）拿着：切到别的页再回来，打了一半的话和附件还在。
  */
 @Composable
-fun AssistantComposer(draft: ComposerDraft) {
+fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
     val pickers = rememberAttachmentPickers(draft)
+    val voice = rememberVoiceInput(draft)
     var sayError by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var sheetOpen by remember { mutableStateOf(false) }
     val assistant = state.assistant
     val speaking = assistant?.speaking == true
     val direct = directTarget(draft.input)
@@ -645,10 +654,17 @@ fun AssistantComposer(draft: ComposerDraft) {
     val chosenID = assistant?.config?.sessionEngineID?.takeIf { it.isNotEmpty() }
     val chosen = engines.firstOrNull { it.id == chosenID }
     val defaultEngine = engines.firstOrNull { it.id == state.defaultEngineID } ?: engines.firstOrNull()
+    val shown = chosen ?: defaultEngine
+    val teamMode = normalizeTeamMode(state.defaultTeamMode)
+    val thinking = if (assistant?.config?.brainThinking == true) "high" else "off"
 
     fun change(what: String, block: suspend () -> Unit) {
         scope.launch { runCatching { block() }.onFailure { sayError = "没换成$what" to (it.message ?: "") } }
     }
+
+    val modelLabel = shown?.label ?: "默认模型"
+    val teamLabel = TEAM_MODES.firstOrNull { it.raw == teamMode }?.short ?: teamMode
+    val thinkingLabel = thinkingTitle(thinking, ASSISTANT_THINKING_LEVELS)
 
     Composer(
         value = draft.input,
@@ -656,14 +672,18 @@ fun AssistantComposer(draft: ComposerDraft) {
         placeholder = when {
             !state.connected -> "连上远程机器才能跟助手说话"
             uploading -> "附件上传中…"
-            speaking -> "想插一句？（空着点右边是打断）"
+            speaking -> "想插一句？打了字点发送就打断它重来"
             else -> "跟助手说点什么…"
         },
         enabled = state.connected,
         canSend = !empty && !uploading,
         busy = uploading && !speaking,
-        onStop = if (speaking && empty) ({ model.client.stopAssistant() }) else null,
+        onStop = if (speaking) ({ model.client.stopAssistant() }) else null,
         stopDescription = "打断",
+        runningSend = RunningSend.Send,
+        voice = voice,
+        onMore = { sheetOpen = true },
+        summary = if (usable) "$modelLabel · $teamLabel · 思考 $thinkingLabel" else null,
         onSend = {
             val text = draft.input.trim()
             val paths = draft.readyPaths
@@ -678,43 +698,6 @@ fun AssistantComposer(draft: ComposerDraft) {
                 }
             }
         },
-        tools = {
-            AttachmentButton(
-                enabled = state.connected,
-                onPickMedia = pickers.pickMedia,
-                onPickFile = pickers.pickFile,
-            )
-            ModelPicker(
-                engines = engines,
-                selectedID = chosenID,
-                label = (chosen ?: defaultEngine)?.label ?: "默认模型",
-                enabled = usable,
-                header = "助手开会话、插话用的模型",
-                footnote = "只改助手的，不动新对话的默认",
-                followDefault = defaultEngine?.let { "现在是 ${it.label}" } ?: "跟这台新对话的默认走",
-                onChoose = { picked ->
-                    change("模型") {
-                        model.client.setAssistantSessionEngine(picked.takeIf { it != FOLLOW_DEFAULT_ENGINE })
-                    }
-                },
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            TeamModePicker(
-                current = normalizeTeamMode(state.defaultTeamMode),
-                enabled = state.connected,
-                header = "任务模式（新开的会话）",
-                footnote = "改的是这台新对话的默认：助手新开的会话、你新建的会话都按它",
-                onChoose = { mode -> change("任务模式") { model.client.setDefaultTeamMode(mode) } },
-            )
-            ThinkingPicker(
-                levels = ASSISTANT_THINKING_LEVELS,
-                current = if (assistant?.config?.brainThinking == true) "high" else "off",
-                enabled = usable,
-                header = "思考模式（助手自己）",
-                footnote = "助手想事情、回你话时开不开深度思考",
-                onChoose = { level -> change("思考模式") { model.client.setAssistantBrainThinking(level != "off") } },
-            )
-        },
         above = {
             // 「#短号 …」= 这条不经大脑、原样转给那段会话，先说清楚再发
             if (direct != null) {
@@ -727,6 +710,82 @@ fun AssistantComposer(draft: ComposerDraft) {
             AttachmentChips(draft.attachments.toList(), onRemove = { id -> draft.remove(id) })
         },
     )
+
+    if (sheetOpen) {
+        val menu = ComposerMenu(
+            quick = listOf(
+                QuickAction(Icons.Filled.Image, "图片 / 视频", enabled = state.connected, onClick = pickers.pickMedia),
+                QuickAction(Icons.Filled.Description, "文件", enabled = state.connected, onClick = pickers.pickFile),
+                QuickAction(
+                    Icons.Filled.Videocam,
+                    "视频通话",
+                    enabled = state.connected && model.client.target != null,
+                    tint = LocalFridayExtra.current.success,
+                    onClick = onVideoCall,
+                ),
+            ),
+            rows = if (!usable) emptyList() else listOf(
+                ChoiceRow(
+                    icon = Icons.Filled.AutoAwesome,
+                    title = "模型",
+                    value = modelLabel,
+                    note = shown?.let { state.usage[it.usageKey]?.line },
+                    header = "助手开会话、插话用的模型",
+                    footnote = "只改助手的，不动新对话的默认",
+                    choices = buildList {
+                        add(
+                            MenuChoice(
+                                key = FOLLOW_DEFAULT_ENGINE,
+                                title = "跟新对话一样",
+                                detail = defaultEngine?.let { "现在是 ${it.label}" } ?: "跟这台新对话的默认走",
+                                selected = chosenID == null,
+                            )
+                        )
+                        engines.forEach { e ->
+                            val usage = state.usage[e.usageKey]
+                            add(
+                                MenuChoice(
+                                    key = e.id,
+                                    title = e.label,
+                                    detail = e.title.takeIf { it.isNotBlank() && it != e.label },
+                                    note = usage?.line,
+                                    loading = usage?.loading == true,
+                                    selected = e.id == chosenID,
+                                )
+                            )
+                        }
+                    },
+                    onOpen = { model.client.refreshUsage() },
+                    onChoose = { picked ->
+                        change("模型") {
+                            model.client.setAssistantSessionEngine(picked.takeIf { it != FOLLOW_DEFAULT_ENGINE })
+                        }
+                    },
+                ),
+                ChoiceRow(
+                    icon = Icons.Filled.AccountTree,
+                    title = "任务模式",
+                    value = teamLabel,
+                    header = "任务模式（新开的会话）",
+                    footnote = "改的是这台新对话的默认：助手新开的会话、你新建的会话都按它",
+                    choices = TEAM_MODES.map { MenuChoice(it.raw, it.title, it.detail, selected = it.raw == teamMode) },
+                    onChoose = { mode -> change("任务模式") { model.client.setDefaultTeamMode(mode) } },
+                ),
+                ChoiceRow(
+                    icon = Icons.Filled.Psychology,
+                    title = "思考模式",
+                    value = thinkingLabel,
+                    header = "思考模式（助手自己）",
+                    footnote = "助手想事情、回你话时开不开深度思考",
+                    choices = ASSISTANT_THINKING_LEVELS.map {
+                        MenuChoice(it, thinkingTitle(it, ASSISTANT_THINKING_LEVELS), selected = it == thinking)
+                    },
+                    onChoose = { level -> change("思考模式") { model.client.setAssistantBrainThinking(level != "off") } },
+                ),
+            ),
+        )
+        ComposerSheet(menu, onDismiss = { sheetOpen = false })
+    }
 
     sayError?.let { (title, message) ->
         AlertDialog(

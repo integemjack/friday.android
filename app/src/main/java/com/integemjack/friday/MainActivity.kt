@@ -148,10 +148,34 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     // 返回键：别的页先回助手页（主页面），在助手页上才退出 App。侧栏开着时 HomeScaffold 先收侧栏
     BackHandler(enabled = tab != HomeTabs.ASSISTANT) { go(HomeTabs.ASSISTANT) }
 
+    // 跟助手视频通话：先要麦克风（必须）和摄像头（没给就只听、对方看不到你），再打给连着的那台的机器人
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun startCall() {
+        val target = model.client.target ?: return
+        val name = model.client.state.value.assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手"
+        model.call.start(target.botId, name, video = true)
+    }
+    val callPermissions = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) { granted ->
+        if (granted[Manifest.permission.RECORD_AUDIO] == true) {
+            startCall()
+        } else {
+            android.widget.Toast.makeText(context, "要跟助手通话得给麦克风权限", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    fun requestCall() {
+        val needed = listOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA).filter {
+            androidx.core.content.ContextCompat.checkSelfPermission(context, it) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (needed.isEmpty()) startCall() else callPermissions.launch(needed.toTypedArray())
+    }
+
     // 底部输入框：助手页和会话页是同一个 Composer，只是发给谁不同；活动 / 设置没有输入框
     val dock: (@Composable () -> Unit)? = when (tab) {
         HomeTabs.ASSISTANT -> {
-            { AssistantComposer(assistantDraft) }
+            { AssistantComposer(assistantDraft, onVideoCall = ::requestCall) }
         }
         HomeTabs.CHAT -> {
             { ChatComposer(chatDrafts) }
@@ -178,6 +202,8 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
             else -> SettingsScreen()
         }
     }
+    // 跟助手的通话盖在整个界面上（没在通话时什么都不画）
+    com.integemjack.friday.ui.CallScreen(model.call)
     openError?.let { (title, message) ->
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { openError = null },

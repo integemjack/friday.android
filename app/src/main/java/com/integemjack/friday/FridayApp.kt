@@ -93,6 +93,9 @@ class AppModel(private val app: Application) {
     val client = FridayClient(scope, BuildConfig.VERSION_NAME, schat)
     val media = MediaLoader(client, mediaCacheDir(app))
 
+    /** 跟助手打视频 / 语音电话（打给连着的那台 Friday 的机器人） */
+    val call = com.integemjack.friday.call.AssistantCall(app, schat, scope)
+
     private var lastAttentionTick = 0L
     private var notifiedReadyVersion: String? = null
 

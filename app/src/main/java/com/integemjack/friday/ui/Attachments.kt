@@ -111,45 +111,6 @@ fun formatBytes(bytes: Long): String = when {
     else -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
 }
 
-/**
- * 附件按钮：点开选相册还是选文件。放在 [Composer] 工具行的最左边，是一颗 32dp 的圆（＋），
- * 跟旁边的选择胶囊一样高；不用 IconButton（它会把自己撑到 48dp，工具行被顶高）。
- */
-@Composable
-fun AttachmentButton(enabled: Boolean, onPickMedia: () -> Unit, onPickFile: () -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    val scheme = MaterialTheme.colorScheme
-    Box {
-        Box(
-            Modifier
-                .size(32.dp)
-                .clip(CircleShape)
-                .background(if (enabled) scheme.surfaceContainerHigh else Color.Transparent)
-                .clickable(enabled = enabled, role = Role.Button) { expanded = true },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Filled.Add,
-                contentDescription = "添加附件",
-                tint = if (enabled) scheme.onSurfaceVariant else scheme.onSurfaceVariant.copy(alpha = 0.4f),
-                modifier = Modifier.size(19.dp),
-            )
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(
-                text = { Text("图片 / 视频") },
-                leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
-                onClick = { expanded = false; onPickMedia() },
-            )
-            DropdownMenuItem(
-                text = { Text("文件") },
-                leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null) },
-                onClick = { expanded = false; onPickFile() },
-            )
-        }
-    }
-}
-
 /** 待传附件的一排小卡片（带进度、错误、删除）。挂在 [Composer] 上面，左右留白由它给 */
 @Composable
 fun AttachmentChips(items: List<PendingAttachment>, onRemove: (String) -> Unit) {

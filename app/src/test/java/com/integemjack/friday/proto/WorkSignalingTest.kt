@@ -200,4 +200,55 @@ class WorkSignalingTest {
         assertEquals(30_000L, expiresAt - timestamp)
         assertTrue(frame.containsKey("callType"))
     }
+
+    // MARK: 打给助手的通话（同一个状态机，callType video）
+
+    @Test
+    fun `video call dials with callType video and hangup carries durationSec`() {
+        var clock = 1_000L
+        val host = RecordingHost()
+        val events = mutableListOf<WorkSignaling.Event>()
+        val signaling = WorkSignaling(
+            host = host,
+            onEvent = { events += it },
+            timers = FakeTimer(),
+            now = { clock },
+            newRequestId = { "call-1" },
+            callType = "video",
+        )
+        signaling.dial(7)
+        assertEquals("video", host.last("p2p_request")!!["callType"]!!.jsonPrimitive.content)
+
+        signaling.onResponse("call-1", accepted = true, reason = "")
+        signaling.markConnected()
+        clock += 185_000
+        signaling.hangup()
+
+        val bye = host.last("p2p_signaling") ?: error("没发挂断")
+        assertEquals("hangup", bye["type"]!!.jsonPrimitive.content)
+        assertEquals(185L, bye["durationSec"]!!.jsonPrimitive.content.toLong())
+    }
+
+    @Test
+    fun `work channel hangup has no durationSec`() {
+        val s = Setup()
+        s.signaling.dial(7)
+        s.signaling.onResponse("req-1", accepted = true, reason = "")
+        s.signaling.hangup()
+        assertFalse(s.host.last("p2p_signaling")!!.containsKey("durationSec"))
+    }
+
+    @Test
+    fun `call rejected offline says the assistant cannot pick up`() {
+        val host = RecordingHost()
+        val events = mutableListOf<WorkSignaling.Event>()
+        val signaling = WorkSignaling(
+            host = host, onEvent = { events += it }, timers = FakeTimer(),
+            now = { 1_000L }, newRequestId = { "call-1" }, callType = "video",
+        )
+        signaling.dial(7)
+        signaling.onResponse("call-1", accepted = false, reason = "offline")
+        val ended = events.last() as WorkSignaling.Event.Ended
+        assertTrue(ended.reason.startsWith("助手现在接不了电话"))
+    }
 }
