@@ -59,6 +59,7 @@ import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
@@ -69,6 +70,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -94,6 +96,7 @@ import com.integemjack.friday.proto.blockThinking
 import com.integemjack.friday.proto.blockTool
 import com.integemjack.friday.proto.fileChange
 import com.integemjack.friday.proto.fileLineCounts
+import com.integemjack.friday.proto.toolArgumentsText
 import kotlinx.coroutines.launch
 
 /**
@@ -111,8 +114,6 @@ fun ChatScreen() {
     val state by model.client.stateFlow.collectAsState()
     val chat = state.chat
     val scope = rememberCoroutineScope()
-    // 每段会话一份滚动位置：侧栏里换一段，新的那段从最底下开始看，不沿用上一段翻到的地方
-    val listState = rememberSaveable(chat?.id, saver = LazyListState.Saver) { LazyListState() }
     val clipboard = LocalClipboardManager.current
     var menuMessage by remember { mutableStateOf<ChatMessage?>(null) }
     val openDrawer = LocalOpenDrawer.current
@@ -122,19 +123,28 @@ fun ChatScreen() {
     val branches = tree?.branches ?: emptyMap()
     val runtime = chat?.runtime
     val workingDirectory = chat?.workingDirectory
-
-    // 消息流倒着排（reverseLayout，同助手页）：最新那条在 index 0 = 屏幕最下面。
-    // 一打开就停在最底下；最后一条再长（工具卡片、图片后加载）也是贴着底往上长，不会把位置顶跑。
-    // 正着排时只能 scrollToItem(最后一条)，那是把最后一条的「顶」对齐屏幕顶：最后一条一长就看不到底
-    val timeline = remember(messages) { messages.asReversed() }
     val showDots = runtime?.generating == true && (messages.isEmpty() || messages.last().role != "assistant")
-    // 底下冒出新的一条（新消息 / 「思考中…」）时跟到底；本来就贴着底部才跟，往上翻着看的时候不抢滚动条。
-    // 最后一条流式变长不用管：贴着底时它自己往上长
-    val bottomKey = if (showDots) GENERATING_KEY else messages.lastOrNull()?.id
-    LaunchedEffect(listState, bottomKey) {
-        if (bottomKey != null && listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
+
+    // 消息流从上往下排（最新的在最下面）：点开思考 / 操作时上面的不动、下面的往下推，收起时往上收。
+    // （以前倒着排贴底，点开一行会把它和上面的都往上顶，只能事后滚回来，一跳一跳的）
+    // 每段会话一份滚动位置，一打开就停在最底下：最后一项、偏移给到很大，列表自己收到「最后一条的底贴着底」
+    val listState = rememberSaveable(chat?.id, saver = LazyListState.Saver) {
+        LazyListState((messages.size + (if (showDots) 1 else 0) - 1).coerceAtLeast(0), END_OFFSET)
     }
-    val atBottom by remember(listState) { derivedStateOf { listState.firstVisibleItemIndex <= 1 } }
+    // 贴底跟随：在最底下时，来了新的、最后一条流式变长（每次排版完看一眼）就跟到底；
+    // 自己往上翻了、或者点开了什么（FollowBottom），就不跟，直到又滑回最底下
+    val follow = remember(chat?.id) { FollowBottom() }
+    LaunchedEffect(listState, follow) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) follow.following = !listState.canScrollForward
+        }
+    }
+    LaunchedEffect(listState, follow) {
+        snapshotFlow { listState.layoutInfo }.collect {
+            if (follow.following && listState.canScrollForward && !listState.isScrollInProgress) listState.scrollToEnd()
+        }
+    }
+    val atBottom by remember(listState) { derivedStateOf { !listState.canScrollForward } }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -145,7 +155,10 @@ fun ChatScreen() {
         floatingActionButton = {
             if (chat != null && messages.isNotEmpty() && !atBottom) {
                 SmallFloatingActionButton(
-                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    onClick = {
+                        follow.following = true
+                        scope.launch { listState.scrollToEnd() }
+                    },
                     // 内容铺到了输入框后面：按钮得浮在输入框上面
                     modifier = Modifier.padding(bottom = LocalDockPadding.current),
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -178,11 +191,11 @@ fun ChatScreen() {
         }
         Box(Modifier.fillMaxSize().padding(padding)) {
             // 消息一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐。
-            // 倒着排但 Arrangement 靠上：消息不够一屏时还是从顶上排下来，跟原来一样
+            // 消息不够一屏时从顶上排下来
+            CompositionLocalProvider(LocalFollowBottom provides follow) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize().fadeTopEdge(),
-                reverseLayout = true,
                 // 左右只留 12dp：智能体的回复不包气泡、铺满整行，一行多放几个字
                 contentPadding = PaddingValues(
                     start = 12.dp,
@@ -192,11 +205,7 @@ fun ChatScreen() {
                 ),
                 verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Top),
             ) {
-                // 倒排：先写的 index 小 = 在下面。「思考中…」在最底下
-                if (showDots) {
-                    item(key = GENERATING_KEY) { GeneratingDots() }
-                }
-                items(timeline, key = { it.id }) { message ->
+                items(messages, key = { it.id }) { message ->
                     Box {
                         MessageItem(
                             message = message,
@@ -221,6 +230,11 @@ fun ChatScreen() {
                         )
                     }
                 }
+                // 「思考中…」在最底下
+                if (showDots) {
+                    item(key = GENERATING_KEY) { GeneratingDots() }
+                }
+            }
             }
         }
     }
@@ -228,6 +242,18 @@ fun ChatScreen() {
 
 /** 消息流里「思考中…」那一项的 key（消息 id 是服务端给的，不会撞上这个） */
 private const val GENERATING_KEY = "friday.ui:generating"
+
+/**
+ * 滚到最后一项的「偏移」：比任何一条消息都高。列表排版时偏移超出那一项就往回收，
+ * 收到「最后一项的底贴着列表底」为止——这样一步到底，长消息也是看到它的结尾，不是它的头
+ */
+private const val END_OFFSET = 1_000_000
+
+/** 滚到最底下（最后一条的结尾贴着输入框上沿） */
+private suspend fun LazyListState.scrollToEnd() {
+    val count = layoutInfo.totalItemsCount
+    if (count > 0) scrollToItem(count - 1, END_OFFSET)
+}
 
 // MARK: 输入框
 
@@ -749,13 +775,18 @@ fun BlockView(block: MessageBlock, workingDirectory: String? = null) {
 @Composable
 private fun ThinkingBlock(content: String) {
     var expanded by remember { mutableStateOf(false) }
+    // 点开时「思考」这一行留在原地，内容往下长；收起时往上收
+    val holdPosition = rememberHoldPosition()
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Column(Modifier.fillMaxWidth().animateContentSize()) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(6.dp))
-                .clickable { expanded = !expanded }
+                .clickable {
+                    holdPosition()
+                    expanded = !expanded
+                }
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -787,11 +818,14 @@ private fun ThinkingBlock(content: String) {
 
 /**
  * 工具：只一行（状态图标 + 名字 + 结果的第一行；没成 / 等确认才在右边写一个字样），结果不再另起一行。
- * 不包卡片，跟正文靠颜色分开；点一下展开参数、结果和子 Agent 的运行记录（里面的操作同样一行一个）
+ * 不包卡片，跟正文靠颜色分开；点一下展开参数、结果和子 Agent 的运行记录（里面的操作同样一行一个）。
+ * 在跑的自己摊开详情（在跑什么命令、改什么、子 Agent 走到哪），跑完自己收起；点过就按点的来
  */
 @Composable
 fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
-    var expanded by remember { mutableStateOf(false) }
+    var toggled by remember { mutableStateOf<Boolean?>(null) }
+    val expanded = toggled ?: (tool.status == "running")
+    val holdPosition = rememberHoldPosition()
     val extra = com.integemjack.friday.ui.theme.LocalFridayExtra.current
     val scheme = MaterialTheme.colorScheme
     // 成功的不写「完成」：绿勾就够了；在跑的转圈。只有要你注意的才多一个字样
@@ -822,7 +856,10 @@ fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(6.dp))
-                .clickable { expanded = !expanded }
+                .clickable {
+                    holdPosition()
+                    toggled = !expanded
+                }
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -900,9 +937,8 @@ fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
                         Text(tool.result.take(2000), style = MaterialTheme.typography.bodySmall, color = scheme.error)
                     }
                 } else {
-                    if (tool.arguments.isNotBlank() && tool.arguments != "{}") {
-                        MonospaceBlock(tool.arguments.take(2000))
-                    }
+                    // 参数不贴 JSON：跑命令的「$ 命令」，别的「键: 值」一行一个
+                    toolArgumentsText(tool.arguments)?.let { MonospaceBlock(it.take(2000)) }
                     if (tool.result.isNotBlank()) {
                         MonospaceBlock(tool.result.take(4000))
                     }

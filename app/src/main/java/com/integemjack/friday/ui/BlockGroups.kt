@@ -25,12 +25,12 @@ sealed interface BlockItem {
 }
 
 /**
- * 收进一组的工具。不收的：等你确认 / 回答的（要你点的不能藏起来）、
- * 直接内嵌媒体的（看图 / 看视频 / 听录音、带附件的：图收起来就看不到了）
+ * 收进一组的工具。不收的：在跑的（单独一行、详情摊开，跑完再收进去）、
+ * 等你确认 / 回答的（要你点的不能藏起来）、直接内嵌媒体的（看图 / 看视频 / 听录音、带附件的：图收起来就看不到了）
  */
 private fun foldableTool(block: MessageBlock): Boolean {
     val tool = blockTool(block) ?: return false
-    if (tool.status == "awaitingApproval") return false
+    if (tool.status == "running" || tool.status == "awaitingApproval") return false
     if (TOOL_MEDIA_ARG.containsKey(tool.name.lowercase()) || tool.media.isNotEmpty()) return false
     return true
 }
@@ -72,7 +72,7 @@ fun groupBlocks(blocks: List<MessageBlock>): List<BlockItem> {
 /** 收起来那一行写什么 */
 data class OpsSummary(
     val count: Int,
-    /** 还在跑的那个（流式时在最后）：行里写「正在…」 */
+    /** 还在跑的那个（在跑的不收进组，一般是 null；留着给运行记录里的旧数据） */
     val running: ToolEvent?,
     val failed: Int,
     val linesAdded: Int,

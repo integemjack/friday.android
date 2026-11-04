@@ -52,7 +52,15 @@ class BlockGroupsTest {
     }
 
     @Test
-    fun `一组写几个操作、做了哪几种、在跑的是哪个、改了多少行`() {
+    fun `在跑的不收进去，单独一行；跑完再并进前面那组`() {
+        val running = listOf(tool("x1"), tool("x2"), think("T1"), tool("x3", status = "running"))
+        assertEquals("[x1,x2] T1 x3", shape(running))
+        val done = listOf(tool("x1"), tool("x2"), think("T1"), tool("x3"))
+        assertEquals("[x1,x2,T1,x3]", shape(done))
+    }
+
+    @Test
+    fun `一组写几个操作、做了哪几种、改了多少行`() {
         val group = groupBlocks(
             listOf(
                 tool("x1"), tool("x2"),
@@ -68,13 +76,13 @@ class BlockGroupsTest {
                     })
                 },
                 tool("x3", status = "failed"),
-                tool("x4", title = "读取文件", status = "running"),
+                tool("x4", title = "读取文件"),
             )
         ).single() as BlockItem.Ops
         val summary = opsSummary(group.tools)
         assertEquals(5, summary.count)
         assertEquals("执行命令 ×3、修改文件、读取文件", summary.kinds)
-        assertEquals("读取文件", toolTitle(summary.running!!))
+        assertEquals(null, summary.running)
         assertEquals(1, summary.failed)
         assertEquals(2, summary.linesAdded)
         assertEquals(1, summary.linesRemoved)

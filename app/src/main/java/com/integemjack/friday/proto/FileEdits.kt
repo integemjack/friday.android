@@ -47,6 +47,21 @@ fun fileChange(tool: ToolEvent): FileChange? {
     return FileChange(path, hunks, wholeFile = false)
 }
 
+/**
+ * 工具参数给人看的样子（不贴 JSON）：跑命令的写「$ 命令」，别的一个字段一行「键: 值」。
+ * 参数还在流式写、JSON 不完整时原样给；空的返回 null
+ */
+fun toolArgumentsText(arguments: String): String? {
+    val raw = arguments.trim()
+    if (raw.isEmpty() || raw == "{}") return null
+    val args = runCatching { Json.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return raw
+    args.str("command")?.let { return "$ $it" }
+    return args.entries.joinToString("\n") { (key, value) ->
+        val text = (value as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content ?: value.toString()
+        "$key: $text"
+    }.ifBlank { null }
+}
+
 /** 比太大的不逐行比（两边行数相乘超过这个）：整段旧的算删、整段新的算加 */
 private const val MAX_DIFF_CELLS = 400_000L
 

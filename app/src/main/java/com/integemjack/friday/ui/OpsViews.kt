@@ -42,6 +42,8 @@ import com.integemjack.friday.proto.FileChange
 import com.integemjack.friday.proto.MessageBlock
 import com.integemjack.friday.proto.lineDiff
 import com.integemjack.friday.ui.theme.LocalFridayExtra
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.staticCompositionLocalOf
 
 /**
  * 一串块按 [groupBlocks] 摆出来：连续的操作收成一行，其余一块一行。
@@ -61,12 +63,13 @@ fun BlockList(blocks: List<MessageBlock>, workingDirectory: String?) {
 }
 
 /**
- * 收起来的一串操作：一行「▸ 5 个操作  执行命令 ×3、修改文件 ×2   +40 −3」，
- * 在跑时写「正在…」，有失败的右边标出来；点开一行一个操作（中间夹着的思考也在里面）
+ * 收起来的一串操作：一行「▸ 执行命令 ×3、修改文件 ×2   +40 −3」（不写「N 个操作」），
+ * 有失败的右边标出来；点开一行一个操作（中间夹着的思考也在里面）。在跑的不收进来（[groupBlocks]）
  */
 @Composable
 private fun OpsGroupView(group: BlockItem.Ops, workingDirectory: String?) {
     var expanded by remember { mutableStateOf(false) }
+    val holdPosition = rememberHoldPosition()
     val summary = remember(group.blocks) { opsSummary(group.tools) }
     val scheme = MaterialTheme.colorScheme
     val muted = scheme.onSurfaceVariant
@@ -75,7 +78,10 @@ private fun OpsGroupView(group: BlockItem.Ops, workingDirectory: String?) {
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(6.dp))
-                .clickable { expanded = !expanded }
+                .clickable {
+                    holdPosition()
+                    expanded = !expanded
+                }
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -94,13 +100,7 @@ private fun OpsGroupView(group: BlockItem.Ops, workingDirectory: String?) {
                 }
             }
             Text(
-                buildAnnotatedString {
-                    append("${summary.count} 个操作")
-                    val detail = summary.running?.let { "正在" + toolTitle(it) } ?: summary.kinds
-                    withStyle(SpanStyle(color = muted.copy(alpha = 0.6f), fontSize = MaterialTheme.typography.bodySmall.fontSize)) {
-                        append("  $detail")
-                    }
-                },
+                summary.running?.let { "正在" + toolTitle(it) } ?: summary.kinds,
                 style = MaterialTheme.typography.labelLarge,
                 color = muted,
                 maxLines = 1,
@@ -128,6 +128,31 @@ private fun OpsGroupView(group: BlockItem.Ops, workingDirectory: String?) {
             }
         }
     }
+}
+
+// MARK: 贴底跟随（点开向下长、收起向上收）
+
+/**
+ * 会话页的消息流从上往下排（最新的在最下面），「贴着底」是自己跟的：在最底下时，来了新的、最后一条流式变长，
+ * 就跟到底；往上翻了、或者点开了什么，就不跟，直到又滑回最底下（或点「回到最新」）。
+ *
+ * 点开 / 收起一行时上面的不动、下面的往下推 / 往上收——正着排的列表天然就是这样，不用事后挪。
+ * （以前倒着排：哪一条变高，它和它上面的都被往上顶，只能等它长完再滚回来，晚一帧，看着就是一跳一跳的）
+ * 唯一要管的是跟随：在最底下点开最后一条时还跟着底，就又把它顶上去了，所以点开 / 收起先停掉跟随
+ */
+@Stable
+class FollowBottom {
+    var following by mutableStateOf(true)
+}
+
+/** 会话页给的（别的地方没有 = 什么也不做） */
+val LocalFollowBottom = staticCompositionLocalOf<FollowBottom?> { null }
+
+/** 点开 / 收起一行之前调：先不跟底，点的那一行就留在原地 */
+@Composable
+fun rememberHoldPosition(): () -> Unit {
+    val follow = LocalFollowBottom.current
+    return remember(follow) { { follow?.following = false } }
 }
 
 /** 「+12 −3」：加的绿、删的红 */

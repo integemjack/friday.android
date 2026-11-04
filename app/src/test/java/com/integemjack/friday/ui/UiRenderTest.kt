@@ -267,14 +267,15 @@ class UiRenderTest {
         )
         renderChat(model)
 
-        // 收起来只有一行：几个操作、做了哪几种、改了多少行
-        compose.onNodeWithText("2 个操作  执行命令、修改文件").assertExists()
+        // 收起来只有一行：做了哪几种、改了多少行（不写「N 个操作」）
+        compose.onNodeWithText("执行命令、修改文件").assertExists()
+        assertNoText("2 个操作")
         compose.onNodeWithText("+1 −1").assertExists()
         assertNoText("执行命令  ok")
         compose.onNodeWithText("改好了").assertExists()
 
         // 点开：一行一个，改文件的那行跟着文件名
-        compose.onNodeWithText("2 个操作  执行命令、修改文件").performClick()
+        compose.onNodeWithText("执行命令、修改文件").performClick()
         compose.onNodeWithText("执行命令  ok").assertExists()
         compose.onNodeWithText("修改文件  a.c").assertExists()
 
@@ -284,6 +285,130 @@ class UiRenderTest {
         compose.onNodeWithText("int a;").assertExists()
         compose.onNodeWithText("int a = 1;").assertExists()
         compose.onNodeWithText("已修改 /home/u/proj/src/a.c：替换了 1 处").assertExists()
+    }
+
+    @Test
+    fun `在跑的操作不折进去，自己摊开在跑什么；参数不贴 JSON`() {
+        val running = MessageBlock(
+            "x3",
+            buildJsonObject {
+                put("tool", buildJsonObject {
+                    put("_0", buildJsonObject {
+                        put("id", "x3"); put("name", "run_shell"); put("title", "执行命令")
+                        put("arguments", """{"command":"ctest -R http","timeout_seconds":600}""")
+                        put("status", "running"); put("result", "")
+                    })
+                })
+            },
+        )
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(
+                    listOf(
+                        message("1", "user", listOf(textBlock("b1", "跑测试"))),
+                        message(
+                            "2", "assistant",
+                            listOf(
+                                toolBlock("x1", "read_file", "读取文件", "succeeded", "1 行"),
+                                toolBlock("x2", "run_shell", "执行命令", "succeeded", "退出码 0"),
+                                running,
+                            ),
+                            parent = "1", at = "2026-01-01T00:00:01Z",
+                        ),
+                    ),
+                    runtime = runtime(generating = true),
+                ),
+            )
+        )
+        renderChat(model)
+
+        // 跑完的两个折成一行，在跑的那个单独一行、详情摊开
+        compose.onNodeWithText("读取文件、执行命令").assertExists()
+        compose.onNodeWithText("$ ctest -R http").assertExists()
+        assertNoText("""{"command":"ctest -R http","timeout_seconds":600}""")
+    }
+
+    @Test
+    fun `点开思考时那一行留在原地，内容往下长`() {
+        val long = (1..12).joinToString("\n") { "想法第 $it 行" }
+        val conversation = longConversation("A", count = 30).toMutableList()
+        val last = conversation.last()
+        // 倒数第二条（离底不远、在屏幕里）带一段思考
+        val target = conversation[conversation.size - 2]
+        conversation[conversation.size - 2] = target.copy(blocks = listOf(thinkingBlock("T", long)) + target.blocks)
+        val model = modelWith(
+            FridayState(conn = connected, openConversationId = "C1", chat = chatState(conversation.dropLast(1) + last))
+        )
+        renderChat(model)
+
+        val before = compose.onNodeWithText("思考 …").getBoundsInRoot().top
+        compose.onNodeWithText("思考 …").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("想法第 12 行", substring = true).assertExists()
+        val after = compose.onNodeWithText("思考 ▾").getBoundsInRoot().top
+        assertTrue("「思考」那一行被顶走了：$before → $after", kotlin.math.abs((after - before).value) <= 2f)
+
+        // 收起：还在原地
+        compose.onNodeWithText("思考 ▾").performClick()
+        compose.waitForIdle()
+        val collapsed = compose.onNodeWithText("思考 …").getBoundsInRoot().top
+        assertTrue("收起后「思考」那一行挪了：$before → $collapsed", kotlin.math.abs((collapsed - before).value) <= 2f)
+    }
+
+    @Test
+    fun `停在最底下时点开最后一条的思考，也留在原地往下长（不被跟底顶上去）`() {
+        val long = (1..20).joinToString("\n") { "想法第 $it 行" }
+        val conversation = longConversation("A", count = 30).toMutableList()
+        val last = conversation.last()
+        conversation[conversation.size - 1] = last.copy(blocks = listOf(thinkingBlock("T", long)) + last.blocks)
+        val model = modelWith(FridayState(conn = connected, openConversationId = "C1", chat = chatState(conversation)))
+        renderChat(model)
+
+        val before = compose.onNodeWithText("思考 …").getBoundsInRoot().top
+        compose.onNodeWithText("思考 …").performClick()
+        compose.waitForIdle()
+        val after = compose.onNodeWithText("思考 ▾").getBoundsInRoot().top
+        assertTrue("最后一条的「思考」被顶走了：$before → $after", kotlin.math.abs((after - before).value) <= 2f)
+        // 内容往下长到了输入框后面：「回到最新」出来，点了再到底
+        compose.onNodeWithContentDescription("回到最新").performClick()
+        compose.waitForIdle()
+        val end = compose.onNodeWithText("A 第 30 条").getBoundsInRoot()
+        val input = compose.onNodeWithText("发消息…").getBoundsInRoot()
+        assertTrue("回到最新后最后一条 ${end.bottom} 被输入框 ${input.top} 挡住了", end.bottom <= input.top)
+    }
+
+    @Test
+    fun `在最底下时最后一条变长会跟到底；翻上去以后就不跟`() {
+        val model = modelWith(
+            FridayState(conn = connected, openConversationId = "C1", chat = chatState(longConversation("A", count = 30)))
+        )
+        renderChat(model)
+
+        fun grow(prefix: String) {
+            val chat = model.client.state.value.chat!!
+            val last = chat.nodes.getValue("A30")
+            val more = (1..15).map { textBlock("$prefix-$it", "$prefix 新的第 $it 段") }
+            model.client.state.value = model.client.state.value.copy(
+                chat = chat.copy(nodes = chat.nodes + ("A30" to last.copy(blocks = last.blocks + more)))
+            )
+            compose.waitForIdle()
+        }
+
+        // 贴着底：流式长出来的跟上，最新那段在输入框上面
+        grow("X")
+        val newest = compose.onNodeWithText("X 新的第 15 段", useUnmergedTree = true).getBoundsInRoot()
+        val input = compose.onNodeWithText("发消息…").getBoundsInRoot()
+        assertTrue("没跟到底：最新一段 ${newest.bottom}，输入框 ${input.top}", newest.bottom <= input.top && newest.bottom > input.top - 120.dp)
+        assertNoDescription("回到最新")
+
+        // 翻上去看老的：再长也不抢位置
+        messageList("A 第 29 条").performScrollToIndex(9)
+        val reading = compose.onNodeWithText("A 第 10 条").getBoundsInRoot().top
+        grow("Y")
+        assertEquals(reading, compose.onNodeWithText("A 第 10 条").getBoundsInRoot().top)
+        compose.onNodeWithContentDescription("回到最新").assertIsDisplayed()
     }
 
     private fun taskActivity(steps: List<com.integemjack.friday.proto.TaskStep>, goal: String = "发 v1.2") =
@@ -548,8 +673,8 @@ class UiRenderTest {
         )
         renderChat(model)
 
-        // 往上翻到老消息那儿（倒排：index 30 = 第 10 条）：「回到最新」出来
-        messageList("A 第 40 条").performScrollToIndex(30)
+        // 往上翻到老消息那儿（index 9 = 第 10 条）：「回到最新」出来
+        messageList("A 第 40 条").performScrollToIndex(9)
         compose.onNodeWithText("A 第 10 条").assertIsDisplayed()
         compose.onNodeWithContentDescription("回到最新").assertIsDisplayed()
         assertNoText("A 第 40 条")
@@ -562,7 +687,7 @@ class UiRenderTest {
         assertNoDescription("回到最新")
 
         // 「回到最新」点了也回到底
-        messageList("B 第 40 条").performScrollToIndex(30)
+        messageList("B 第 40 条").performScrollToIndex(9)
         assertNoText("B 第 40 条")
         compose.onNodeWithContentDescription("回到最新").performClick()
         compose.onNodeWithText("B 第 40 条").assertIsDisplayed()
