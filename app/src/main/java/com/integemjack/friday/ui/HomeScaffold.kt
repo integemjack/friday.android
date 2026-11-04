@@ -353,7 +353,7 @@ private fun DrawerPanel(
                 .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                 .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 6.dp),
         ) {
-            DrawerBrand(state.conn)
+            DrawerBrand(state.conn, state.lastServer)
             Spacer(Modifier.height(14.dp))
 
             DrawerItem(
@@ -431,15 +431,15 @@ private fun DrawerPanel(
 
 /** 侧栏顶上：渐变图标 + 名字 + 连着哪台机器（带状态灯） */
 @Composable
-private fun DrawerBrand(conn: ConnState) {
+private fun DrawerBrand(conn: ConnState, lastServer: com.integemjack.friday.proto.ServerInfo?) {
     val scheme = MaterialTheme.colorScheme
     val dark = scheme.background.luminance() < 0.5f
     val (dot, line) = when (conn) {
         is ConnState.Connected ->
             LocalFridayExtra.current.success to conn.server.displayName.ifBlank { conn.server.hostname }
-        is ConnState.Connecting -> scheme.tertiary to "连接中…"
-        is ConnState.Failed -> scheme.error to "连接失败"
-        ConnState.Disconnected -> scheme.outline to "没连上远程机器"
+        is ConnState.Connecting -> scheme.tertiary to (lastServer?.let { "正在连 ${it.hostname}…" } ?: "连接中…")
+        is ConnState.Failed -> scheme.error to (lastServer?.let { "离线 · ${it.hostname}，自动重连中" } ?: "连接失败")
+        ConnState.Disconnected -> scheme.outline to (lastServer?.let { "离线 · ${it.hostname}" } ?: "没连上远程机器")
     }
     Row(
         Modifier

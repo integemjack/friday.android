@@ -97,6 +97,13 @@ data class FridayState(
     val usage: Map<String, UsageInfo> = emptyMap(),
     /** 这台最近选过的工作目录；null = 旧服务端没有 directories（菜单里不列最近，选了也不记） */
     val directories: List<RecentDirectory>? = null,
+    /** 上次连上的那台（没连上时界面上写「离线 · 它的名字」） */
+    val lastServer: ServerInfo? = null,
+    /**
+     * 现在摆着的不是实时的：从本地快照读出来的 / 连接断了之后留着的，是这个时刻的内容（毫秒）。
+     * null = 实时的（连着、hello 之后）
+     */
+    val cachedAt: Long? = null,
 ) {
     val connected: Boolean get() = conn is ConnState.Connected
 
@@ -127,6 +134,23 @@ class FridayClient(
     private var reconnectJob: Job? = null
     private var lastTarget: RemoteTarget? = null
     private var wantConnected = false
+
+    /** 本地快照（断网 / 重开 App 时先显示上次的）；AppModel 接上，测试里可以不给 */
+    interface Cache {
+        fun load(botId: Long): FridayState?
+        fun loadChat(botId: Long, conversationId: String): ChatState?
+        fun removeChat(botId: Long, conversationId: String)
+    }
+
+    var cache: Cache? = null
+
+    /** state 里的数据是哪台机器的（换机器时先换成那台的快照，别把上一台的会话摆出来） */
+    @Volatile
+    var dataBotId: Long = 0
+        private set
+
+    /** 想连着（连过、没被用户断开 / 没被永久拒绝）：网络回来时据此马上重连 */
+    val wantsConnection: Boolean get() = wantConnected
     private var reconnectAttempt = 0
     /** 助手页开着（订了 assistant.subscribe）：重连后要重新订回来 */
     private var assistantWanted = false
@@ -135,7 +159,10 @@ class FridayClient(
 
     /** 拨号到指定机器人（走 SChat 信令 + WebRTC 工作通道） */
     suspend fun connect(target: RemoteTarget): ServerInfo {
-        disconnect()
+        teardownConnection()
+        assistantWanted = false
+        // 同一台：留着现在的数据（快照 / 断线前的），连上后被实时的盖掉；换了一台：先摆那台的快照
+        if (dataBotId != target.botId) showCached(target.botId)
         wantConnected = true
         lastTarget = target
         reconnectAttempt = 0
@@ -207,6 +234,8 @@ class FridayClient(
             val directories = (snapshot?.get("directories") as? JsonObject)?.let { recentDirectories(it) }
             state.value = state.value.copy(
                 conn = ConnState.Connected(server),
+                lastServer = server,
+                cachedAt = null,
                 summaries = summaries,
                 runner = runner,
                 engines = engines?.engines ?: emptyList(),
@@ -219,6 +248,8 @@ class FridayClient(
             // 连上就订活动（审批提醒）
             rpc.notify("activity.subscribe")
             if (assistantWanted) runCatching { subscribeAssistant() }
+            // 开着一段会话（断线前开的 / 离线时看的快照）：重新订上，换成实时的
+            state.value.openConversationId?.let { id -> scope.launch { runCatching { subscribeConversation(id) } } }
             return server
         } catch (e: Exception) {
             // 传输层已经报过更具体的原因（比如 not_friends）就别用泛泛的「连接已关闭」盖掉它
@@ -245,10 +276,12 @@ class FridayClient(
         rpc?.close(reason ?: "连接已断开")
         scope.launch {
             cleanupTransport()
+            // 数据留着（标成「这会儿的」），界面上照样看得到，连回来再换成实时的
+            val since = state.value.cachedAt ?: System.currentTimeMillis()
             if (state.value.conn is ConnState.Connected || state.value.conn is ConnState.Connecting) {
-                state.value = state.value.copy(conn = ConnState.Failed(reason ?: "连接断开，自动重连中…"))
+                state.value = state.value.copy(conn = ConnState.Failed(reason ?: "连接断开，自动重连中…"), cachedAt = since)
             } else if (reason != null) {
-                state.value = state.value.copy(conn = ConnState.Failed(reason))
+                state.value = state.value.copy(conn = ConnState.Failed(reason), cachedAt = since)
             }
             scheduleReconnect()
         }
@@ -263,26 +296,63 @@ class FridayClient(
             val target = lastTarget ?: return@launch
             reconnectAttempt++
             runCatching { doConnect(target) }
-                .onSuccess {
-                    reconnectAttempt = 0
-                    // 重连后重新订阅打开的会话
-                    state.value.openConversationId?.let { id ->
-                        runCatching { subscribeConversation(id) }
-                    }
-                }
+                .onSuccess { reconnectAttempt = 0 }
                 .onFailure { scheduleReconnect() }
         }
     }
 
+    /**
+     * 马上重连（网络回来了 / App 回到前台）：不等退避。只在想连着、又没连着也没在连的时候动
+     */
+    fun reconnectNow() {
+        if (!wantConnected) return
+        val conn = state.value.conn
+        if (conn is ConnState.Connected || conn is ConnState.Connecting) return
+        val target = lastTarget ?: return
+        reconnectJob?.cancel()
+        reconnectAttempt = 0
+        reconnectJob = scope.launch {
+            runCatching { doConnect(target) }.onFailure { scheduleReconnect() }
+        }
+    }
+
+    /** 用户点「断开工作通道」：不再自动重连；界面上的数据留着（离线看得到上次的） */
     fun disconnect() {
-        wantConnected = false
+        teardownConnection()
         assistantWanted = false
+        val since = state.value.cachedAt ?: System.currentTimeMillis()
+        state.value = state.value.copy(
+            conn = ConnState.Disconnected,
+            runner = null,
+            activities = emptyList(),
+            openConversationId = null,
+            chat = null,
+            cachedAt = if (dataBotId > 0) since else null,
+        )
+    }
+
+    /** 退出登录：数据全清（快照由 AppModel 删） */
+    fun forget() {
+        teardownConnection()
+        assistantWanted = false
+        dataBotId = 0
+        state.value = FridayState()
+    }
+
+    /** 摆出 [botId] 那台的本地快照（没有就空着）；只在没连着的时候用 */
+    fun showCached(botId: Long) {
+        if (dataBotId == botId && botId > 0) return
+        dataBotId = botId
+        state.value = cache?.load(botId) ?: FridayState()
+    }
+
+    private fun teardownConnection() {
+        wantConnected = false
         reconnectJob?.cancel()
         reconnectJob = null
         eventJob?.cancel()
         eventJob = null
         cleanupTransport()
-        state.value = FridayState()
     }
 
     private fun cleanupTransport() {
@@ -520,7 +590,13 @@ class FridayClient(
 
     /** 订阅一段会话（REMOTE.md §6） */
     suspend fun subscribeConversation(id: String) {
-        val rpc = rpc ?: throw Exception("未连接")
+        // 没连着：有存下来的就先看存下来的（连上以后 doConnect 会重新订上，换成实时的）
+        val rpc = rpc ?: run {
+            val cached = cache?.loadChat(dataBotId, id)
+                ?: throw Exception("没连上远程机器，这段会话也没有存下来的内容")
+            state.value = state.value.copy(openConversationId = id, chat = cached)
+            return
+        }
         val current = state.value.chat
         if (current != null && current.id != id) rpc.notify("conversation.unsubscribe", buildJsonObject { put("id", current.id) })
         val result = rpc.request("conversation.subscribe", buildJsonObject { put("id", id) })
@@ -965,6 +1041,7 @@ class FridayClient(
     /** 删会话（服务端会停掉它的生成和子 Agent、删它的媒体） */
     suspend fun removeConversation(id: String) {
         rpc?.request("conversation.remove", buildJsonObject { put("id", id) })
+        cache?.removeChat(dataBotId, id)
         if (state.value.openConversationId == id) {
             state.value = state.value.copy(openConversationId = null, chat = null)
         }

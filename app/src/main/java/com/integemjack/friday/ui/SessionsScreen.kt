@@ -84,9 +84,12 @@ fun SessionsScreen(
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
     var deleting by remember { mutableStateOf<ConversationSummary?>(null) }
 
-    Box(Modifier.fillMaxSize()) {
-        when (val conn = state.conn) {
-            is ConnState.Connected -> {
+    // 没连上、但有上次存下来的列表：照样列出来（点开看存下来的内容），顶上一行说明是离线的
+    val showList = state.conn is ConnState.Connected || state.summaries.isNotEmpty()
+    Column(Modifier.fillMaxSize()) {
+        if (showList && state.conn !is ConnState.Connected) OfflineLine(state.conn, state.cachedAt)
+        val conn = state.conn
+        if (showList) {
                 val groups = remember(state.summaries) { groupSummaries(state.summaries) }
                 LazyColumn(
                     Modifier.fillMaxSize(),
@@ -133,7 +136,7 @@ fun SessionsScreen(
                         }
                     }
                 }
-            }
+        } else when (conn) {
             is ConnState.Connecting -> Row(
                 Modifier
                     .fillMaxWidth()
@@ -165,6 +168,7 @@ fun SessionsScreen(
                 action = "去设置",
                 onAction = onGoSettings,
             )
+            is ConnState.Connected -> Unit
         }
     }
 
@@ -214,6 +218,39 @@ fun SessionsScreen(
  * 分组：置顶的单独一组，其余按更新时间落到今天 / 昨天 / 更早。
  * 组内保持服务端给的顺序（服务端已经按时间排好了），只是把它们归到对应的组下面。
  */
+/** 离线时列表顶上那一行：在连 / 断着，显示的是哪会儿的内容 */
+@Composable
+private fun OfflineLine(conn: ConnState, cachedAt: Long?) {
+    val scheme = MaterialTheme.colorScheme
+    val time = cachedAt?.let { formatTime(java.time.Instant.ofEpochMilli(it).toString()) }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 10.dp, end = 6.dp, top = 2.dp, bottom = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(scheme.surfaceContainerHighest.copy(alpha = 0.6f))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (conn is ConnState.Connecting) {
+            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+        } else {
+            Icon(Icons.Filled.WifiOff, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
+        }
+        Spacer(Modifier.width(7.dp))
+        Text(
+            when (conn) {
+                is ConnState.Connecting -> "正在连接…" + (time?.let { " · 先显示 $it 的" } ?: "")
+                else -> "离线" + (time?.let { " · 显示的是 $it 的内容" } ?: "")
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = scheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 private fun groupSummaries(all: List<ConversationSummary>): List<Pair<String, List<ConversationSummary>>> {
     val today = LocalDate.now()
     val pinned = mutableListOf<ConversationSummary>()

@@ -107,8 +107,12 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     }
     var openError by remember { mutableStateOf<Pair<String, String>?>(null) }
     // 两个输入框里打了一半的话（和附件）都提到这一层：切到别的页再回来不丢。会话的按会话分开存
-    val assistantDraft = rememberSaveable(saver = ComposerDraft.Saver) { ComposerDraft() }
-    val chatDrafts = remember { ChatDrafts() }
+    // 字也存到本地（DraftStore）：App 被关掉再开还在
+    val assistantDraft = remember {
+        val key = com.integemjack.friday.data.DraftStore.ASSISTANT
+        ComposerDraft(model.drafts.load(key)) { model.drafts.save(key, it) }
+    }
+    val chatDrafts = remember { ChatDrafts(model.drafts) }
     val requested by tabRequest.collectAsState()
 
     // 切页：离开会话页就退订那段会话（事件量不小，没人看就别收）

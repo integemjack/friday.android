@@ -83,6 +83,14 @@ class SchatService(
 
     // MARK: 启动 / 恢复
 
+    /** 登录着（有凭据；不管现在连没连上）：后台保持连接只在这时候开 */
+    fun hasSession(): Boolean = session != null
+
+    /** 现在在线 / 正在连：网络回来时不用再催 */
+    val busyOrOnline: Boolean
+        get() = _state.value.phase == Phase.Online || _state.value.phase == Phase.Connecting ||
+            _state.value.phase == Phase.LoggingIn
+
     /** 启动时读本地会话：有就拿去连，没有就只把表单预填上 */
     fun restore() {
         val stored = store.load() ?: return

@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
@@ -77,6 +78,7 @@ fun SettingsScreen() {
             onOpenDrawer = openDrawer,
         )
         SchatCard()
+        BackgroundCard()
         AssistantCard()
         UpdateCard()
         StorageCard()
@@ -118,6 +120,7 @@ private fun StorageCard() {
     var revision by remember { mutableStateOf(0) }
     val mediaBytes = remember(revision) { dirSize(mediaCacheDir(context)) }
     val uploadBytes = remember(revision) { dirSize(java.io.File(context.cacheDir, "uploads")) }
+    val offlineBytes = remember(revision) { dirSize(java.io.File(context.filesDir, "state-cache")) }
 
     FridayCard {
         SectionTitle(icon = Icons.Filled.CleaningServices, title = "缓存")
@@ -143,6 +146,110 @@ private fun StorageCard() {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "离线内容 ${formatBytes(offlineBytes).ifBlank { "0 B" }}：会话列表、助手的日志、最近看过的 ${com.integemjack.friday.data.StateCache.MAX_CHATS} 段会话",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            enabled = offlineBytes > 0,
+            onClick = {
+                java.io.File(context.filesDir, "state-cache").deleteRecursively()
+                revision++
+            },
+        ) { Text("清掉离线内容") }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "没网、远程那台没开的时候先显示这些；连上以后自动换成最新的。退出登录时会一起删掉。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * 后台连接：前台服务 + 常驻通知，切到后台、锁屏以后工作通道还连着（待确认的调用、助手的消息照样进来）。
+ * 深度省电（Doze）会断网：给一个「不限制电池优化」的入口；国产系统另有「自启动 / 后台运行」要自己去开。
+ */
+@Composable
+private fun BackgroundCard() {
+    val context = LocalContext.current
+    val model = LocalAppModel.current
+    val keepAlive by model.settings.keepAlive.collectAsState()
+    val power = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+    var revision by remember { mutableStateOf(0) }
+    val unrestricted = remember(revision) { power.isIgnoringBatteryOptimizations(context.packageName) }
+    // 从系统设置回来时重新看一眼
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) revision++
+        }
+        lifecycle.lifecycle.addObserver(observer)
+        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+    }
+
+    FridayCard {
+        SectionTitle(
+            icon = Icons.Filled.Sync,
+            title = "后台保持连接",
+            trailing = {
+                androidx.compose.material3.Switch(
+                    checked = keepAlive,
+                    onCheckedChange = { on ->
+                        model.settings.setKeepAlive(on)
+                        com.integemjack.friday.ConnectionService.sync(context)
+                    },
+                )
+            },
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (keepAlive) {
+                "切到后台、锁屏以后也一直连着远程 Friday：待确认的调用、助手的消息照样进来，通知栏有一条常驻的「后台保持连接」。会多耗一点电。"
+            } else {
+                "关着：切到后台一会儿系统就可能把连接断掉，回到 App 时再自动连上。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (keepAlive) {
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Dot(if (unrestricted) LocalFridayExtra.current.success else MaterialTheme.colorScheme.tertiary, size = 7.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (unrestricted) "电池优化：不限制" else "电池优化：受限（深度省电时会断网）",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!unrestricted) {
+                    androidx.compose.material3.TextButton(onClick = { requestUnrestricted(context) }) { Text("去放开") }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "小米、华为、OPPO、vivo 等还要在系统设置里给 Friday 打开「自启动」/「允许后台运行」，不然系统还是会把它收掉。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** 请系统别对 Friday 做电池优化（弹系统的确认框；有的系统不给弹，就打开电池优化列表让用户自己找） */
+@android.annotation.SuppressLint("BatteryLife")
+private fun requestUnrestricted(context: android.content.Context) {
+    val direct = android.content.Intent(
+        android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        android.net.Uri.parse("package:" + context.packageName),
+    )
+    runCatching { context.startActivity(direct) }.onFailure {
+        runCatching {
+            context.startActivity(android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
     }
 }
 
@@ -257,7 +364,7 @@ private fun SchatCard() {
                     Spacer(Modifier.width(6.dp))
                     Text("重连聊天服务器")
                 }
-                OutlinedButton(onClick = { model.schat.logout() }) { Text("退出登录") }
+                OutlinedButton(onClick = { model.logout() }) { Text("退出登录") }
             }
 
             // 远程 Friday：好友里的机器人

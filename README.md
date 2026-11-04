@@ -27,6 +27,12 @@
 - **通知**：App 在后台时有待确认的调用 / 提问发系统通知（带会话名和工具名），点通知直达活动页；
   新版本下载完也通知。Android 13+ 首次启动申请通知权限
 - **活动**：所有会话的实时动静、待确认的调用批准 / 拒绝、ask_user 问题选项点选；点会话名直接进聊天
+- **离线 / 本地快照**：每台机器（SChat 账号 + 机器人）存一份：会话列表、助手的日志（最近 200 条）和设置、模型列表、
+  默认任务模式、最近的工作目录、最近看过的 15 段会话内容（`filesDir/state-cache`，协议同一套 JSON）。没网、远程那台没开、
+  刚打开 App 时先显示这些（标「离线 · 显示的是几点的内容」），连上后自动换成最新的；输入框里打了一半的话也存着。退出登录全删
+- **后台保持连接**（设置里开关，默认开）：前台服务（specialUse；通话时加麦克风 / 摄像头）+ 一条安静的常驻通知 +
+  锁屏不让 CPU 睡死，切到后台、锁屏后工作通道还连着；网络回来 / 换网络、回到 App 时马上重连（不等退避）；
+  设置里有「不限制电池优化」的入口（深度省电会断网），国产系统另需允许自启动 / 后台运行
 - **自动更新**：启动和每 6 小时查 GitHub 最新 Release，下载带进度，完成后台一键安装
 
 对应桌面版：`friday-desktop-work`（Electron），两者连法是同一套：登录 SChat → `p2p_request{callType:"work"}`
@@ -67,7 +73,7 @@ JSON-RPC 2.0（协议见 `Friday/qt/docs/REMOTE.md` §2）。
 ```bash
 ./gradlew assembleDebug    # 调试包
 ./gradlew assembleRelease  # 正式包（需 FRIDAY_KEYSTORE_* 环境变量，缺省退化为未签名）
-./gradlew testDebugUnitTest  # 单元 + 界面测试（95 个，JVM 上跑，不用设备）
+./gradlew testDebugUnitTest  # 单元 + 界面测试（105 个，JVM 上跑，不用设备）
 ./gradlew lintDebug        # lint（CI 闸门）
 bash tools/test-bump-version.sh   # bump 逻辑测试
 ```

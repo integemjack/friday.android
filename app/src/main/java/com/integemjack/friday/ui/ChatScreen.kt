@@ -140,6 +140,7 @@ fun ChatScreen() {
                 title = chat?.title?.ifBlank { "（无标题）" } ?: "会话",
                 subtitle = when {
                     chat == null -> "没有打开的会话"
+                    !state.connected -> "离线 · 存下来的内容" + (place?.let { " · $it" } ?: "")
                     generating -> "生成中…"
                     else -> place ?: "已连上"
                 },
@@ -215,11 +216,21 @@ fun ChatScreen() {
 
 // MARK: 输入框
 
-/** 所有会话的草稿（AppRoot 拿着，切页不丢；按会话分开，换到别的会话不会把这段的草稿带过去） */
+/**
+ * 所有会话的草稿（AppRoot 拿着，切页不丢；按会话分开，换到别的会话不会把这段的草稿带过去）。
+ * 给了 [store] 时字也存到本地：App 关掉再开、换到这段会话，打了一半的话还在
+ */
 @Stable
-class ChatDrafts {
+class ChatDrafts(private val store: com.integemjack.friday.data.DraftStore? = null) {
     private val drafts = mutableMapOf<String, ComposerDraft>()
-    fun of(conversationId: String): ComposerDraft = drafts.getOrPut(conversationId) { ComposerDraft() }
+    fun of(conversationId: String): ComposerDraft = drafts.getOrPut(conversationId) {
+        if (store == null || conversationId.isEmpty()) {
+            ComposerDraft()
+        } else {
+            val key = com.integemjack.friday.data.DraftStore.chat(conversationId)
+            ComposerDraft(store.load(key)) { store.save(key, it) }
+        }
+    }
 }
 
 /**
@@ -281,11 +292,13 @@ fun ChatComposer(drafts: ChatDrafts) {
         onValueChange = { draft.input = it },
         placeholder = when {
             chat == null -> "先在侧栏里选一段会话"
+            !state.connected -> "离线：连上远程机器以后才能发（打的字会留着）"
             uploading -> "附件上传中…"
             generating -> "补充给智能体：做完当前这一步就交给它"
             else -> "发消息…"
         },
-        enabled = chat != null,
+        // 离线看的是存下来的内容：不能发、不能改设置；打了一半的字还在
+        enabled = chat != null && state.connected,
         canSend = !empty && !uploading,
         busy = uploading && !generating,
         onStop = if (generating) ({ model.client.stop() }) else null,

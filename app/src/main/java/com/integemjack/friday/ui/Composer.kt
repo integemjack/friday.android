@@ -399,8 +399,20 @@ fun ComposerNotice(
  * 切到别的页、别的会话再回来，打了一半的话和附件都还在。
  */
 @Stable
-class ComposerDraft {
-    var input by mutableStateOf("")
+class ComposerDraft(
+    initial: String = "",
+    /** 字变了就存一下（[com.integemjack.friday.data.DraftStore]：App 关掉再开还在）；不给就只在内存里 */
+    private val persist: ((String) -> Unit)? = null,
+) {
+    private var text by mutableStateOf(initial)
+
+    var input: String
+        get() = text
+        set(value) {
+            if (value == text) return
+            text = value
+            persist?.invoke(value)
+        }
     val attachments = mutableStateListOf<PendingAttachment>()
     /** 上传前拷到本地的副本（发完、移除时删掉） */
     val localCopies = mutableMapOf<String, java.io.File>()
@@ -442,7 +454,7 @@ class ComposerDraft {
         /** 转屏 / 进程重建时只留打了一半的字（附件的本地副本和上传进度留不住） */
         val Saver: Saver<ComposerDraft, String> = Saver(
             save = { it.input },
-            restore = { text -> ComposerDraft().apply { input = text } },
+            restore = { text -> ComposerDraft(text) },
         )
     }
 }

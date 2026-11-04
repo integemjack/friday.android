@@ -766,4 +766,76 @@ class UiRenderTest {
         assertNoText("位置：上海市黄浦区人民大道200号 · 精度约 15 米")
         compose.onNodeWithContentDescription("语音输入").assertIsDisplayed()
     }
+
+    // MARK: 离线 / 本地快照 / 草稿
+
+    private val offlineSummary = ConversationSummary(
+        id = "C1", title = "改代码", updatedAt = "2026-01-01T00:00:00Z",
+        pinned = false, isEmpty = false, hasDraft = false,
+    )
+
+    @Test
+    fun `离线时侧栏照样列出存下来的会话，顶上标离线`() {
+        val model = modelWith(
+            FridayState(conn = ConnState.Disconnected, summaries = listOf(offlineSummary), cachedAt = System.currentTimeMillis())
+        )
+        render(model) { SessionsScreen(onOpen = {}) }
+        compose.onNodeWithText("改代码").assertIsDisplayed()
+        compose.onNodeWithText("离线", substring = true).assertIsDisplayed()
+        assertNoText("还没有连接远程机器")
+    }
+
+    @Test
+    fun `离线时助手页照样显示存下来的日志`() {
+        val assistant = AssistantState.fromJson(buildJsonObject { put("enabled", true); put("config", buildJsonObject { put("name", "小F") }) })
+        val model = modelWith(
+            FridayState(
+                conn = ConnState.Disconnected,
+                assistant = assistant,
+                assistantEntries = listOf(
+                    com.integemjack.friday.proto.JournalEntry(
+                        "j1", "2026-01-01T00:00:00Z", "user", null, "昨晚说的那句", emptyList(), false, false, null,
+                    )
+                ),
+                cachedAt = System.currentTimeMillis(),
+            )
+        )
+        render(model) { AssistantScreen() }
+        compose.onNodeWithText("昨晚说的那句").assertExists()
+        compose.onNodeWithText("存下来的", substring = true).assertExists()
+        assertNoText("连上远程 Friday 才有助手")
+    }
+
+    @Test
+    fun `离线点开会话看存下来的内容，输入框说清楚现在不能发`() {
+        val model = modelWith(FridayState(conn = ConnState.Disconnected, summaries = listOf(offlineSummary)))
+        val cached = chatState(listOf(message("1", "assistant", listOf(textBlock("b1", "上次的回答")))))
+        model.client.cache = object : com.integemjack.friday.proto.FridayClient.Cache {
+            override fun load(botId: Long): FridayState? = null
+            override fun loadChat(botId: Long, conversationId: String) = cached.takeIf { conversationId == "C1" }
+            override fun removeChat(botId: Long, conversationId: String) {}
+        }
+        kotlinx.coroutines.runBlocking { model.client.subscribeConversation("C1") }
+        assertEquals("C1", model.client.state.value.openConversationId)
+
+        renderChat(model)
+        compose.onNodeWithText("上次的回答").assertExists()
+        compose.onNodeWithText("离线：连上远程机器以后才能发（打的字会留着）").assertIsDisplayed()
+
+        // 没存过的那段：说清楚为什么打不开
+        val error = kotlin.runCatching { kotlinx.coroutines.runBlocking { model.client.subscribeConversation("C9") } }.exceptionOrNull()
+        assertEquals("没连上远程机器，这段会话也没有存下来的内容", error?.message)
+    }
+
+    @Test
+    fun `打了一半的话存到本地，重开以后还在，发出去就删`() {
+        val store = com.integemjack.friday.data.DraftStore(app)
+        store.clearAll()
+        ChatDrafts(store).of("C1").input = "打了一半"
+        // 「重开 App」：新的一份草稿表，从本地读
+        val again = ChatDrafts(store).of("C1")
+        assertEquals("打了一半", again.input)
+        again.clear()
+        assertEquals("", ChatDrafts(store).of("C1").input)
+    }
 }

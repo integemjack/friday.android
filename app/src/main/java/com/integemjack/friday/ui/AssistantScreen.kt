@@ -185,7 +185,8 @@ fun AssistantScreen(
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when {
-                !state.connected -> Centered {
+                // 没连上、也没有存下来的日志：才说「要先连上」；有的话照样摆出来（顶上标离线）
+                !state.connected && timeline.isEmpty() -> Centered {
                     EmptyState(
                         icon = Icons.Filled.WifiOff,
                         title = "连上远程 Friday 才有助手",
@@ -229,13 +230,21 @@ fun AssistantScreen(
 
                 else -> Column(Modifier.fillMaxSize()) {
                     // 状态板钉在顶栏下面，不跟着时间线滚（原来它是列表第一项，
-                    // 倒排以后会跑到最底下）
-                    BoardStrip(
-                        Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp),
-                        running = state.assistantBoard?.running ?: 0,
-                        awaiting = state.assistantBoard?.awaiting ?: 0,
-                        channels = state.assistantChannels,
-                    )
+                    // 倒排以后会跑到最底下）；离线时换成一条「显示的是哪会儿的」
+                    if (state.connected) {
+                        BoardStrip(
+                            Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp),
+                            running = state.assistantBoard?.running ?: 0,
+                            awaiting = state.assistantBoard?.awaiting ?: 0,
+                            channels = state.assistantChannels,
+                        )
+                    } else {
+                        OfflineStrip(
+                            Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp),
+                            connecting = state.conn is com.integemjack.friday.proto.ConnState.Connecting,
+                            cachedAt = state.cachedAt,
+                        )
+                    }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
@@ -534,6 +543,33 @@ private fun BoardStrip(
                 text = "${c.botName.ifBlank { c.title }} ${if (online) "在线" else if (c.status == "off") "没开" else c.statusText}",
             )
         }
+    }
+}
+
+/** 离线时顶上那条：在连 / 断着，下面是哪会儿存下来的 */
+@Composable
+private fun OfflineStrip(modifier: Modifier = Modifier, connecting: Boolean, cachedAt: Long?) {
+    val time = cachedAt?.let { clockFormatter.format(Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())) }
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (connecting) {
+            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+        } else {
+            Icon(Icons.Filled.WifiOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
+        }
+        Spacer(Modifier.width(7.dp))
+        Text(
+            (if (connecting) "正在连接…" else "离线") + (time?.let { " · 下面是 $it 存下来的，连上后自动换成最新的" } ?: ""),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+        )
     }
 }
 
