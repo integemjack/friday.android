@@ -13,7 +13,14 @@ import androidx.compose.ui.test.performTextInput
 import com.integemjack.friday.proto.AssistantState
 import com.integemjack.friday.proto.RunnerState
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotDisplayed
+import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -41,6 +48,7 @@ import com.integemjack.friday.ui.theme.FridayTheme
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -219,6 +227,103 @@ class UiRenderTest {
         assertNoText("先看看这是什么")
         compose.onNodeWithText("思考 …").performClick()
         compose.onNodeWithText("先看看这是什么").assertExists()
+    }
+
+    /** 一长串一问一答（一条接一条挂在上一条下面）；最后一条可以塞很多段，比一屏还长 */
+    private fun longConversation(prefix: String, count: Int = 40, lastBlocks: Int = 1) = (1..count).map { i ->
+        val blocks = if (i == count && lastBlocks > 1) {
+            (1..lastBlocks).map { j -> textBlock("$prefix-b$i-$j", "$prefix 末条第 $j 段\n第二行\n第三行") }
+        } else {
+            listOf(textBlock("$prefix-b$i", "$prefix 第 $i 条"))
+        }
+        message(
+            "$prefix$i", if (i % 2 == 1) "user" else "assistant", blocks,
+            parent = if (i > 1) "$prefix${i - 1}" else null,
+        )
+    }
+
+    @Test
+    fun `打开长会话停在最底下，最后一条不被输入框挡住`() {
+        val model = modelWith(
+            FridayState(conn = connected, openConversationId = "C1", chat = chatState(longConversation("A")))
+        )
+        renderChat(model)
+
+        compose.onNodeWithText("A 第 40 条").assertIsDisplayed()
+        assertNoText("A 第 1 条")
+        assertNoDescription("回到最新")
+        // 消息铺在输入框后面，但最后一条的底得在输入框上面
+        val last = compose.onNodeWithText("A 第 40 条").getBoundsInRoot()
+        val input = compose.onNodeWithText("发消息…").getBoundsInRoot()
+        assertTrue("最后一条 ${last.bottom} 被输入框 ${input.top} 挡住了", last.bottom <= input.top)
+    }
+
+    @Test
+    fun `最后一条比一屏还长时，打开看到的是它的结尾`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(longConversation("A", count = 10, lastBlocks = 30)),
+            )
+        )
+        renderChat(model)
+
+        // 整个气泡能长按，文字合并在气泡那一个节点上：要看单独每一段，得看没合并的树
+        compose.onNodeWithText("A 末条第 30 段\n第二行\n第三行", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("A 末条第 1 段\n第二行\n第三行", useUnmergedTree = true).assertIsNotDisplayed()
+        // 结尾在输入框上面，没被挡住
+        val end = compose.onNodeWithText("A 末条第 30 段\n第二行\n第三行", useUnmergedTree = true).getBoundsInRoot()
+        val input = compose.onNodeWithText("发消息…").getBoundsInRoot()
+        assertTrue("末条结尾 ${end.bottom} 被输入框 ${input.top} 挡住了", end.bottom <= input.top)
+    }
+
+    @Test
+    fun `短会话还是从顶上排下来，按时间先后`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(longConversation("A", count = 2)),
+            )
+        )
+        renderChat(model)
+
+        val first = compose.onNodeWithText("A 第 1 条").getBoundsInRoot()
+        val second = compose.onNodeWithText("A 第 2 条").getBoundsInRoot()
+        assertTrue("先说的那条应该在上面", first.bottom <= second.top)
+        assertTrue("两条消息应该贴着顶栏往下排，不是沉在底下（top=${first.top}）", first.top < 300.dp)
+    }
+
+    /** 会话页的消息流（能滚到第几项的那个列表，里面正好有这条） */
+    private fun messageList(visibleText: String) =
+        compose.onNode(hasScrollToIndexAction() and hasAnyDescendant(hasText(visibleText)))
+
+    @Test
+    fun `往上翻过以后换一段会话，新的那段也从最底下开始`() {
+        val model = modelWith(
+            FridayState(conn = connected, openConversationId = "C1", chat = chatState(longConversation("A")))
+        )
+        renderChat(model)
+
+        // 往上翻到老消息那儿（倒排：index 30 = 第 10 条）：「回到最新」出来
+        messageList("A 第 40 条").performScrollToIndex(30)
+        compose.onNodeWithText("A 第 10 条").assertIsDisplayed()
+        compose.onNodeWithContentDescription("回到最新").assertIsDisplayed()
+        assertNoText("A 第 40 条")
+
+        model.client.state.value = model.client.state.value.copy(
+            openConversationId = "C2",
+            chat = chatState(longConversation("B")).copy(id = "C2"),
+        )
+        compose.onNodeWithText("B 第 40 条").assertIsDisplayed()
+        assertNoDescription("回到最新")
+
+        // 「回到最新」点了也回到底
+        messageList("B 第 40 条").performScrollToIndex(30)
+        assertNoText("B 第 40 条")
+        compose.onNodeWithContentDescription("回到最新").performClick()
+        compose.onNodeWithText("B 第 40 条").assertIsDisplayed()
     }
 
     @Test

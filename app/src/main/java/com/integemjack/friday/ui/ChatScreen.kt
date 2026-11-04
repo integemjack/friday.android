@@ -24,8 +24,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -66,6 +66,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -103,7 +104,8 @@ fun ChatScreen() {
     val state by model.client.stateFlow.collectAsState()
     val chat = state.chat
     val scope = rememberCoroutineScope()
-    val listState = rememberLazyListState()
+    // 每段会话一份滚动位置：侧栏里换一段，新的那段从最底下开始看，不沿用上一段翻到的地方
+    val listState = rememberSaveable(chat?.id, saver = LazyListState.Saver) { LazyListState() }
     val clipboard = LocalClipboardManager.current
     var menuMessage by remember { mutableStateOf<ChatMessage?>(null) }
     val openDrawer = LocalOpenDrawer.current
@@ -114,22 +116,18 @@ fun ChatScreen() {
     val runtime = chat?.runtime
     val workingDirectory = chat?.workingDirectory
 
-    // 流式更新时自动滚到底（用户自己往上翻了就不抢他的滚动条）
-    val lastSignature = messages.lastOrNull()?.let { "${it.id}:${it.blocks.size}" } ?: ""
-    LaunchedEffect(messages.size, lastSignature) {
-        if (messages.isEmpty()) return@LaunchedEffect
-        val lastIndex = messages.size - 1
-        val visible = listState.layoutInfo.visibleItemsInfo
-        val nearBottom = visible.isEmpty() || visible.last().index >= lastIndex - 1
-        if (nearBottom) listState.scrollToItem(lastIndex)
+    // 消息流倒着排（reverseLayout，同助手页）：最新那条在 index 0 = 屏幕最下面。
+    // 一打开就停在最底下；最后一条再长（工具卡片、图片后加载）也是贴着底往上长，不会把位置顶跑。
+    // 正着排时只能 scrollToItem(最后一条)，那是把最后一条的「顶」对齐屏幕顶：最后一条一长就看不到底
+    val timeline = remember(messages) { messages.asReversed() }
+    val showDots = runtime?.generating == true && (messages.isEmpty() || messages.last().role != "assistant")
+    // 底下冒出新的一条（新消息 / 「思考中…」）时跟到底；本来就贴着底部才跟，往上翻着看的时候不抢滚动条。
+    // 最后一条流式变长不用管：贴着底时它自己往上长
+    val bottomKey = if (showDots) GENERATING_KEY else messages.lastOrNull()?.id
+    LaunchedEffect(listState, bottomKey) {
+        if (bottomKey != null && listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
     }
-    val atBottom by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val visible = info.visibleItemsInfo
-            visible.isEmpty() || visible.last().index >= info.totalItemsCount - 2
-        }
-    }
+    val atBottom by remember(listState) { derivedStateOf { listState.firstVisibleItemIndex <= 1 } }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -140,7 +138,7 @@ fun ChatScreen() {
         floatingActionButton = {
             if (chat != null && messages.isNotEmpty() && !atBottom) {
                 SmallFloatingActionButton(
-                    onClick = { scope.launch { listState.animateScrollToItem(messages.size - 1) } },
+                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
                     // 内容铺到了输入框后面：按钮得浮在输入框上面
                     modifier = Modifier.padding(bottom = LocalDockPadding.current),
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -172,19 +170,25 @@ fun ChatScreen() {
             return@Scaffold
         }
         Box(Modifier.fillMaxSize().padding(padding)) {
-            // 消息一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐
+            // 消息一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐。
+            // 倒着排但 Arrangement 靠上：消息不够一屏时还是从顶上排下来，跟原来一样
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize().fadeTopEdge(),
+                reverseLayout = true,
                 contentPadding = PaddingValues(
                     start = 16.dp,
                     end = 16.dp,
                     top = TopFadeHeight,
                     bottom = 12.dp + LocalDockPadding.current,
                 ),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Top),
             ) {
-                items(messages, key = { it.id }) { message ->
+                // 倒排：先写的 index 小 = 在下面。「思考中…」在最底下
+                if (showDots) {
+                    item(key = GENERATING_KEY) { GeneratingDots() }
+                }
+                items(timeline, key = { it.id }) { message ->
                     Box {
                         MessageBubble(
                             message = message,
@@ -206,13 +210,13 @@ fun ChatScreen() {
                         )
                     }
                 }
-                if (runtime?.generating == true && (messages.isEmpty() || messages.last().role != "assistant")) {
-                    item { GeneratingDots() }
-                }
             }
         }
     }
 }
+
+/** 消息流里「思考中…」那一项的 key（消息 id 是服务端给的，不会撞上这个） */
+private const val GENERATING_KEY = "friday.ui:generating"
 
 // MARK: 输入框
 
