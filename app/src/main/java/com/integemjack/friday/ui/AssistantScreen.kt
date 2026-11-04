@@ -57,7 +57,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -149,38 +148,9 @@ fun AssistantScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            // 和会话页同一条顶栏（左上角侧栏入口、标题 + 一行状态），两页切来切去不跳
-            val where = state.conn as? com.integemjack.friday.proto.ConnState.Connected
-            HomeTopBar(
-                title = assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手",
-                subtitle = when {
-                    !state.connected -> "没连上远程机器"
-                    assistant?.enabled == true ->
-                        (where?.server?.hostname ?: "") +
-                            (assistant.brainEngineTitle?.let { " · $it" } ?: "")
-                    else -> (where?.server?.hostname ?: "") + " · 还没打开"
-                },
-                subtitleColor = if (assistant?.speaking == true) MaterialTheme.colorScheme.primary else null,
-                dotColor = when {
-                    assistant?.speaking == true -> MaterialTheme.colorScheme.primary
-                    assistant?.enabled == true -> LocalFridayExtra.current.success
-                    else -> null
-                },
-                actions = {
-                    if (state.connected) {
-                        Switch(
-                            checked = assistant?.enabled == true,
-                            onCheckedChange = { on ->
-                                scope.launch {
-                                    runCatching { model.client.setAssistantEnabled(on) }
-                                        .onFailure { sayError = it.message }
-                                }
-                            },
-                        )
-                        Spacer(Modifier.width(4.dp))
-                    }
-                },
-            )
+            // 和会话页同一条顶栏（左上角侧栏入口 + 标题），两页切来切去不跳。
+            // 只有标题：连没连上看侧栏顶上，开关助手在设置里
+            HomeTopBar(title = assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手")
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
@@ -245,11 +215,17 @@ fun AssistantScreen(
                             cachedAt = state.cachedAt,
                         )
                     }
+                    // 列表一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().fadeTopEdge(),
                         reverseLayout = true,
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                        contentPadding = PaddingValues(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = TopFadeHeight,
+                            bottom = 8.dp + LocalDockPadding.current,
+                        ),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(timeline, key = { it.id }) { entry ->
@@ -607,9 +583,13 @@ private fun DayDivider(at: String) {
     }
 }
 
+/** 居中摆一块（在输入框上面那段里居中，不是整屏） */
 @Composable
 private fun Centered(content: @Composable () -> Unit) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { content() }
+    Box(
+        Modifier.fillMaxSize().padding(bottom = LocalDockPadding.current),
+        contentAlignment = Alignment.Center,
+    ) { content() }
 }
 
 /** 来源、时间：日志的 at 是 ISO，界面上只到分 */

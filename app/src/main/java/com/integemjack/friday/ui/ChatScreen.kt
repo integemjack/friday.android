@@ -134,24 +134,15 @@ fun ChatScreen() {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            val generating = runtime?.generating == true
-            val place = workingDirectory?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-            HomeTopBar(
-                title = chat?.title?.ifBlank { "（无标题）" } ?: "会话",
-                subtitle = when {
-                    chat == null -> "没有打开的会话"
-                    !state.connected -> "离线 · 存下来的内容" + (place?.let { " · $it" } ?: "")
-                    generating -> "生成中…"
-                    else -> place ?: "已连上"
-                },
-                subtitleColor = if (generating) MaterialTheme.colorScheme.primary else null,
-                dotColor = if (generating) MaterialTheme.colorScheme.primary else null,
-            )
+            // 只有标题（跟助手页一样）：在不在生成看消息流底下的「思考中…」和输入框的停止键
+            HomeTopBar(title = chat?.title?.ifBlank { "（无标题）" } ?: "会话")
         },
         floatingActionButton = {
             if (chat != null && messages.isNotEmpty() && !atBottom) {
                 SmallFloatingActionButton(
                     onClick = { scope.launch { listState.animateScrollToItem(messages.size - 1) } },
+                    // 内容铺到了输入框后面：按钮得浮在输入框上面
+                    modifier = Modifier.padding(bottom = LocalDockPadding.current),
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 ) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "回到最新") }
@@ -160,7 +151,10 @@ fun ChatScreen() {
     ) { padding ->
         if (chat == null) {
             // 会话被删了 / 进程被系统回收后回来：给一句话和侧栏入口，不留一页白
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.fillMaxSize().padding(padding).padding(bottom = LocalDockPadding.current),
+                contentAlignment = Alignment.Center,
+            ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -178,10 +172,16 @@ fun ChatScreen() {
             return@Scaffold
         }
         Box(Modifier.fillMaxSize().padding(padding)) {
+            // 消息一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier.fillMaxSize().fadeTopEdge(),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = TopFadeHeight,
+                    bottom = 12.dp + LocalDockPadding.current,
+                ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(messages, key = { it.id }) { message ->
@@ -468,6 +468,8 @@ private fun QueueBar(runtime: Runtime) {
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
+            // 输入框背后透明：先垫页面底色，淡色才不会透出后面滚动的字
+            .background(MaterialTheme.colorScheme.background)
             .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.34f))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),

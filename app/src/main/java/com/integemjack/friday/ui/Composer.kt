@@ -16,11 +16,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,6 +41,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -55,7 +61,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -81,8 +91,12 @@ import java.util.UUID
  * 卡片上面可以挂几条提示（排队、重试、附件、直发说明），由调用方经 [above] 给，
  * 跟卡片同宽、同一套左右留白。
  *
- * 容器（背景、让位导航条和键盘）由 [HomeScaffold] 的 dock 负责，这里只画输入框本身。
+ * 容器（让位导航条和键盘）由 [HomeScaffold] 的 dock 负责，这里只画输入框本身；背后不垫底色，
+ * 卡片外面看得到后面滚动的内容。
+ *
+ * 有焦点时在屏幕上任何别的地方按一下，或者键盘被收掉，焦点都会收掉（见 [LocalInputFocus]）。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun Composer(
     value: String,
@@ -105,6 +119,17 @@ fun Composer(
     val dark = scheme.background.luminance() < 0.5f
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+
+    // 「点哪儿都收起」：把有没有焦点报给外壳（外壳在最外层看每一下按在哪），走的时候报没有
+    val inputFocus = LocalInputFocus.current
+    SideEffect { inputFocus?.focused = focused }
+    DisposableEffect(inputFocus) { onDispose { inputFocus?.focused = false } }
+    // 键盘被收掉（返回键、键盘上的收起键）也算一次操作：焦点跟着收，不留一个没键盘的光标
+    val focusManager = LocalFocusManager.current
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(imeVisible) {
+        if (!imeVisible && focused) focusManager.clearFocus()
+    }
     val borderColor by animateColorAsState(
         when {
             !enabled -> scheme.outlineVariant.copy(alpha = 0.4f)
@@ -148,6 +173,23 @@ fun Composer(
                 cursorBrush = SolidColor(scheme.primary),
                 modifier = Modifier
                     .fillMaxWidth()
+                    // 按在框里（含四周留白）：标一下，外壳就不收焦点。Initial 阶段只看不吃，不影响框自己的点按 / 选字
+                    .then(
+                        if (inputFocus != null) {
+                            Modifier.pointerInput(inputFocus) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        if (event.changes.any { it.changedToDownIgnoreConsumed() }) {
+                                            inputFocus.touchedInside = true
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Modifier
+                        }
+                    )
                     .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
                 decorationBox = { inner ->
                     Box {
@@ -373,6 +415,8 @@ fun ComposerNotice(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
+            // 输入框背后是透明的、底下是滚动的内容：先垫一层页面底色，淡色才不会透出后面的字
+            .background(MaterialTheme.colorScheme.background)
             .background(tint.copy(alpha = 0.10f))
             .padding(start = 12.dp, end = if (trailing != null) 4.dp else 12.dp)
             .heightIn(min = 34.dp),

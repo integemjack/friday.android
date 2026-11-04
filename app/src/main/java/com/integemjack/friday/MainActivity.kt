@@ -47,13 +47,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 导航条用全透明（默认是 90% 白的 scrim）：底部 dock 的背景一直铺到屏幕底，
-        // 看着是一整块，不会在 dock 和导航条之间断一道颜色
+        // 导航条用全透明（默认是 90% 白的 scrim）：页面内容一直铺到屏幕底，
+        // 输入框和导航条后面都不垫底色，看得到后面滚动的内容
         enableEdgeToEdge(
             navigationBarStyle = SystemBarStyle.auto(TRANSPARENT_SCRIM, TRANSPARENT_SCRIM),
         )
         // 光设透明色还不够：系统默认会自己垫一层 contrast scrim 保证导航键看得清，
-        // 那层就是 dock 和导航条之间断的那道白。关掉它，让 dock 背景真的铺到屏幕底。
+        // 导航条那儿就又多一道底色。关掉它，导航条后面才真的是页面内容。
         if (Build.VERSION.SDK_INT >= 29) {
             window.isNavigationBarContrastEnforced = false
         }

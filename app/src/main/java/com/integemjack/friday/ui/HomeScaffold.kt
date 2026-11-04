@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -52,6 +54,8 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -59,16 +63,25 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.integemjack.friday.proto.ConnState
@@ -98,6 +111,40 @@ val LocalOpenDrawer = androidx.compose.runtime.staticCompositionLocalOf<(() -> U
 val LocalCloseDrawer = androidx.compose.runtime.staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /**
+ * 底部输入框（连同导航条 / 键盘）占掉的高度。输入框背后是透明的，页面内容一直铺到屏幕底，
+ * 列表要把这段加进自己的 contentPadding，最后一条才能滚到输入框上面；没有输入框的页是 0
+ */
+val LocalDockPadding = compositionLocalOf { 0.dp }
+
+/** 输入框焦点的「点哪儿都收起」：[Composer] 报自己有没有焦点、这一下是不是点在框里，[HomeScaffold] 在最外层判断 */
+val LocalInputFocus = staticCompositionLocalOf<InputFocusTracker?> { null }
+
+/** 只给触摸判断用的两个标记（不是界面状态，不用触发重组） */
+class InputFocusTracker {
+    /** 输入框现在有焦点 */
+    var focused = false
+
+    /** 这次按下是落在输入框里的（框自己在 Initial 阶段标上，外壳在 Main 阶段读完清掉） */
+    var touchedInside = false
+}
+
+/** 列表顶上渐隐的那一段高度：内容滚到顶栏下面是慢慢淡掉的，不是一刀切 */
+val TopFadeHeight = 20.dp
+
+/** 顶边渐隐：把内容本身的透明度从顶上 0 渐变到 [height] 处的 1（离屏合成后按 DstIn 抠），不依赖背后是什么颜色 */
+fun Modifier.fadeTopEdge(height: Dp = TopFadeHeight): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        val h = height.toPx()
+        drawRect(
+            brush = Brush.verticalGradient(0f to Color.Transparent, 1f to Color.Black, startY = 0f, endY = h),
+            size = Size(size.width, h),
+            blendMode = BlendMode.DstIn,
+        )
+    }
+
+/**
  * 主外壳：助手页是主页面，会话页跟它平级，都没有底部导航栏。
  *
  * 手指往右滑时 **主屏跟着一起挪**（不是盖一层遮罩的 drawer）：侧栏从左边推进来、主屏同步右移，
@@ -106,6 +153,10 @@ val LocalCloseDrawer = androidx.compose.runtime.staticCompositionLocalOf<(() -> 
  *
  * 底部 [dock] 是输入框（助手页、会话页都是同一个 [Composer]），它跟着主屏一起移动，
  * 由这里统一让位导航条和键盘，两页的输入框位置、留白一模一样。
+ * 输入框背后不垫底色：页面内容一直铺到屏幕底（导航条底下也是内容），
+ * 输入框占掉的高度经 [LocalDockPadding] 交给各页的列表自己让。
+ *
+ * 输入框有焦点时，在屏幕上**任何地方**按下（滚列表、拉侧栏、点按钮……只要不是点在输入框里）就把焦点收掉、键盘收起。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -118,7 +169,25 @@ fun HomeScaffold(
     content: @Composable () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
-    BoxWithConstraints(Modifier.fillMaxSize().background(drawerBackground())) {
+    val focusManager = LocalFocusManager.current
+    val inputFocus = remember { InputFocusTracker() }
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(drawerBackground())
+            // 只看不吃：Main 阶段在最外层，子级（输入框）的 Initial 已经先跑过、标好了是不是点在框里
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        if (event.changes.any { it.changedToDownIgnoreConsumed() }) {
+                            if (inputFocus.focused && !inputFocus.touchedInside) focusManager.clearFocus()
+                            inputFocus.touchedInside = false
+                        }
+                    }
+                }
+            }
+    ) {
         val scope = rememberCoroutineScope()
         val drawerWidthPx = with(LocalDensity.current) { (maxWidth * DRAWER_WIDTH_FRACTION).toPx() }
         val offset = remember { Animatable(0f) }
@@ -193,17 +262,17 @@ fun HomeScaffold(
             CompositionLocalProvider(
                 LocalOpenDrawer provides ::openDrawer,
                 LocalCloseDrawer provides ::closeDrawer,
+                LocalInputFocus provides inputFocus,
             ) {
                 Scaffold(
                     containerColor = scheme.background,
                     bottomBar = {
                         if (dock != null) {
-                            // 输入框所在的那块：和页面同底色、一直铺到屏幕底，没键盘时让出导航条、
+                            // 输入框所在的那块：背后透明（不垫一整条底色），没键盘时让出导航条、
                             // 键盘弹起时取键盘高度（safeDrawing ∪ ime 的底部，两者不会叠着算）
                             Box(
                                 Modifier
                                     .fillMaxWidth()
-                                    .background(scheme.background)
                                     .windowInsetsPadding(
                                         WindowInsets.safeDrawing
                                             .union(WindowInsets.ime)
@@ -215,10 +284,25 @@ fun HomeScaffold(
                         }
                     },
                 ) { padding ->
+                    // 有输入框时内容不在底下让位：一直铺到屏幕底（Scaffold 把 bottomBar 画在内容上面），
+                    // 让多少交给各页列表（LocalDockPadding）。
                     // consumeWindowInsets：里面那层（各页自己的 Scaffold）再按 safeDrawing 让位时，
-                    // 导航条 / 键盘这段已经扣过了，不会重复让一次、在内容和底栏之间空出一条
-                    Column(Modifier.padding(padding).consumeWindowInsets(padding)) {
-                        content()
+                    // 导航条 / 键盘这段已经扣过了，不会重复让一次
+                    val layoutDirection = LocalLayoutDirection.current
+                    val dockPadding = if (dock != null) padding.calculateBottomPadding() else 0.dp
+                    Column(
+                        Modifier
+                            .padding(
+                                start = padding.calculateStartPadding(layoutDirection),
+                                top = padding.calculateTopPadding(),
+                                end = padding.calculateEndPadding(layoutDirection),
+                                bottom = padding.calculateBottomPadding() - dockPadding,
+                            )
+                            .consumeWindowInsets(padding)
+                    ) {
+                        CompositionLocalProvider(LocalDockPadding provides dockPadding) {
+                            content()
+                        }
                     }
                 }
             }
@@ -243,9 +327,12 @@ fun HomeScaffold(
 @Composable
 private fun drawerBackground(): Color = MaterialTheme.colorScheme.surfaceContainer
 
+/** 顶栏高度：比 Material 默认的 64dp 矮一截（助手页、会话页只有一行标题） */
+private val HomeTopBarHeight = 52.dp
+
 /**
- * 助手页、会话页共用的顶栏：左上角侧栏入口（有待确认的调用时带个小红点），标题 + 一行状态。
- * 两页切来切去，顶栏的高度、字号、按钮位置都不动。
+ * 四个顶级页面共用的顶栏：左上角侧栏入口（有待确认的调用时带个小红点），标题（活动 / 设置下面再带一行小字；
+ * 助手页、会话页只有标题）。切来切去，顶栏的高度、字号、按钮位置都不动。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -259,6 +346,7 @@ fun HomeTopBar(
     val scheme = MaterialTheme.colorScheme
     val openDrawer = LocalOpenDrawer.current
     TopAppBar(
+        expandedHeight = HomeTopBarHeight,
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = scheme.background,
             scrolledContainerColor = scheme.background,
