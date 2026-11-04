@@ -27,6 +27,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Description
@@ -620,7 +624,9 @@ private fun receiptVisual(text: String, status: String, level: String): Pair<Ima
  * 助手页的输入框：跟会话页是**同一个** [Composer]（同样的卡片、左下角「＋」、默认的语音键、
  * 同样的发送 / 停止），由 [HomeScaffold] 放进 dock，所以这里不画背景、也不自己算 inset。
  *
- * 「＋」面板里：图片 / 视频、文件、**视频通话**（直接打给这台的助手，[com.integemjack.friday.call.AssistantCall]），
+ * 「＋」面板里：图片 / 视频、文件、**位置**（定一次位，输入框上面出一条「位置：…」，跟这句话一起发；
+ * 协议里没有位置字段，就写成一段话：地址、WGS-84 坐标、精度、地图链接，见 [SharedLocation]）、
+ * **视频通话**（直接打给这台的助手，[com.integemjack.friday.call.AssistantCall]），
  * 下面三行改的是助手这边对应的设置：
  * - 模型：助手下次开会话、往会话里插话用的（AssistantConfig.sessionEngineID，ASSISTANT.md §16.10）；
  *   「跟新对话一样」= 清掉，不动新对话的默认；每个模型下面写着那家的余额 / 用量
@@ -638,6 +644,7 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val pickers = rememberAttachmentPickers(draft)
     val voice = rememberVoiceInput(draft)
+    val shareLocation = rememberLocationShare(draft)
     var sayError by remember { mutableStateOf<Pair<String, String>?>(null) }
     var sheetOpen by remember { mutableStateOf(false) }
     val assistant = state.assistant
@@ -685,14 +692,23 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
         onMore = { sheetOpen = true },
         summary = if (usable) "$modelLabel · $teamLabel · 思考 $thinkingLabel" else null,
         onSend = {
-            val text = draft.input.trim()
+            val typed = draft.input.trim()
             val paths = draft.readyPaths
+            val location = draft.location
+            // 位置写在前面、你打的话跟在后面（「#短号」直发时位置放后面，免得把短号挤到第二行认不出来）
+            val text = when {
+                location == null -> typed
+                typed.isEmpty() -> location.toMessage()
+                directTarget(typed) != null -> typed + "\n\n" + location.toMessage()
+                else -> location.toMessage() + "\n\n" + typed
+            }
             if (text.isNotEmpty() || paths.isNotEmpty()) {
                 draft.clear()
                 scope.launch {
                     runCatching { model.client.sayToAssistant(text, paths) }
                         .onFailure {
-                            if (draft.input.isEmpty()) draft.input = text
+                            if (draft.input.isEmpty()) draft.input = typed
+                            if (draft.location == null) draft.location = location
                             sayError = "没送出去" to (it.message ?: "")
                         }
                 }
@@ -707,6 +723,31 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
                     tint = MaterialTheme.colorScheme.tertiary,
                 )
             }
+            // 要一起发的位置：正在定 / 定好了（看得到发的是哪儿，不想发就 ×）
+            if (draft.locating) {
+                ComposerNotice(
+                    icon = Icons.Filled.MyLocation,
+                    text = "正在定位…",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            draft.location?.let { location ->
+                ComposerNotice(
+                    icon = Icons.Filled.LocationOn,
+                    text = "位置：" + listOfNotNull(location.label, location.accuracyText).joinToString(" · "),
+                    tint = LocalFridayExtra.current.success,
+                    trailing = {
+                        IconButton(onClick = { draft.location = null }, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "不发位置",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    },
+                )
+            }
             AttachmentChips(draft.attachments.toList(), onRemove = { id -> draft.remove(id) })
         },
     )
@@ -716,6 +757,7 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
             quick = listOf(
                 QuickAction(Icons.Filled.Image, "图片 / 视频", enabled = state.connected, onClick = pickers.pickMedia),
                 QuickAction(Icons.Filled.Description, "文件", enabled = state.connected, onClick = pickers.pickFile),
+                QuickAction(Icons.Filled.LocationOn, "位置", enabled = state.connected, onClick = shareLocation),
                 QuickAction(
                     Icons.Filled.Videocam,
                     "视频通话",

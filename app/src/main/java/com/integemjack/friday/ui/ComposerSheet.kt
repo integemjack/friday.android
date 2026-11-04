@@ -207,7 +207,7 @@ private fun MainPage(menu: ComposerMenu, onOpenRow: (Int) -> Unit, onClose: () -
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             menu.quick.forEach { action ->
                 QuickTile(action) {
@@ -246,7 +246,7 @@ private fun QuickTile(action: QuickAction, onClick: () -> Unit) {
     val tint = action.tint ?: scheme.primary
     Column(
         Modifier
-            .width(76.dp)
+            .width(72.dp)
             .clip(RoundedCornerShape(16.dp))
             .clickable(enabled = action.enabled, role = Role.Button, onClick = onClick)
             .padding(vertical = 6.dp),

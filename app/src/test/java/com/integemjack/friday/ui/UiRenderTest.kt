@@ -733,11 +733,37 @@ class UiRenderTest {
         compose.waitForIdle()
         compose.onNodeWithText("图片 / 视频").assertIsDisplayed()
         compose.onNodeWithText("视频通话").assertIsDisplayed()
+        compose.onNodeWithText("位置").assertIsDisplayed()
         assertNoText("工作目录")
 
         compose.onNodeWithText("模型").performClick()
         compose.waitForIdle()
         compose.onNodeWithText("跟新对话一样").assertIsDisplayed()
         compose.onNodeWithText("现在是 glm-4.6").assertIsDisplayed()
+    }
+
+    @Test
+    fun `助手页定好的位置挂在输入框上面，空着也能发，不想发能去掉`() {
+        val assistant = AssistantState.fromJson(
+            buildJsonObject {
+                put("enabled", true)
+                put("reacting", false)
+                put("config", buildJsonObject { put("name", "小F") })
+            }
+        )
+        val model = modelWith(FridayState(conn = connected, assistant = assistant))
+        val draft = ComposerDraft().apply {
+            location = SharedLocation(31.230416, 121.473701, 15f, 1_700_000_000_000L, "上海市黄浦区人民大道200号")
+        }
+        render(model) { AssistantComposer(draft) }
+
+        compose.onNodeWithText("位置：上海市黄浦区人民大道200号 · 精度约 15 米").assertIsDisplayed()
+        // 框里没字，但有位置要发：右边是发送不是话筒
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed()
+        assertNoDescription("语音输入")
+
+        compose.onNodeWithContentDescription("不发位置").performClick()
+        assertNoText("位置：上海市黄浦区人民大道200号 · 精度约 15 米")
+        compose.onNodeWithContentDescription("语音输入").assertIsDisplayed()
     }
 }

@@ -405,14 +405,20 @@ class ComposerDraft {
     /** 上传前拷到本地的副本（发完、移除时删掉） */
     val localCopies = mutableMapOf<String, java.io.File>()
 
+    /** 要一起发出去的位置（助手页「＋」→「位置」；输入框上面那条可以 × 掉） */
+    var location by mutableStateOf<SharedLocation?>(null)
+
+    /** 正在定位 */
+    var locating by mutableStateOf(false)
+
     /** 还有附件在传：发送键转圈，先别发 */
     val uploading: Boolean get() = attachments.any { !it.done && it.error == null }
 
     /** 传好了的附件在服务端上的路径（runner.submit / assistant.say 的 attachments） */
     val readyPaths: List<String> get() = attachments.filter { it.done }.mapNotNull { it.serverPath }
 
-    /** 没字也没附件 */
-    val isEmpty: Boolean get() = input.isBlank() && readyPaths.isEmpty()
+    /** 没字、没附件、也没要发的位置 */
+    val isEmpty: Boolean get() = input.isBlank() && readyPaths.isEmpty() && location == null
 
     fun update(id: String, transform: (PendingAttachment) -> PendingAttachment) {
         val index = attachments.indexOfFirst { it.id == id }
@@ -426,6 +432,7 @@ class ComposerDraft {
 
     fun clear() {
         input = ""
+        location = null
         attachments.clear()
         localCopies.values.forEach { it.delete() }
         localCopies.clear()

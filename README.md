@@ -13,7 +13,9 @@
     （`runner.setEngine` / `setTeamMode` / `setThinking` / `setWorkingDirectory`，换模型同时记成新对话默认）
   - 在跑时能**工作补充**：停止键一直在，打了字多一颗「补充给智能体」（做完当前这一步就交给它），补进去的消息标「工作中补充」
   - 框里空着时右边默认是**语音键**（手机自带的语音识别，边说边出字，说完看一眼再发）
-- **助手**：和会话页是同一个输入框，也能带附件（`file.upload` 后 `assistant.say` 带路径）；「＋」里有**视频通话**：
+- **助手**：和会话页是同一个输入框，也能带附件（`file.upload` 后 `assistant.say` 带路径）；「＋」里有**位置**：
+  定一次位（系统 LocationManager，不靠 Google Play 服务），输入框上面出一条「位置：…」，跟你打的话一起发——
+  协议里没有位置字段，写成一段话：地址（手机有地理编码服务时）、WGS-84 坐标、精度、高德地图链接；还有**视频通话**：
   直接打给这台的助手（SChat 机器人通话 `callType: video`，Opus + H.264，和工作通道各用各的 PeerConnection）；
   模型 = 助手开会话 / 插话用的（`sessionEngineID`），任务模式 = 这台新对话的默认（`settings.update teamMode`），
   思考模式 = 助手大脑开不开深度思考（`brainThinking`）
@@ -65,7 +67,7 @@ JSON-RPC 2.0（协议见 `Friday/qt/docs/REMOTE.md` §2）。
 ```bash
 ./gradlew assembleDebug    # 调试包
 ./gradlew assembleRelease  # 正式包（需 FRIDAY_KEYSTORE_* 环境变量，缺省退化为未签名）
-./gradlew testDebugUnitTest  # 单元 + 界面测试（92 个，JVM 上跑，不用设备）
+./gradlew testDebugUnitTest  # 单元 + 界面测试（95 个，JVM 上跑，不用设备）
 ./gradlew lintDebug        # lint（CI 闸门）
 bash tools/test-bump-version.sh   # bump 逻辑测试
 ```
