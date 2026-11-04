@@ -15,6 +15,7 @@ import com.integemjack.friday.proto.ChatMessage
 import com.integemjack.friday.proto.ChatState
 import com.integemjack.friday.proto.ConnState
 import com.integemjack.friday.proto.ConversationSummary
+import com.integemjack.friday.proto.EngineInfo
 import com.integemjack.friday.proto.FridayState
 import com.integemjack.friday.proto.GenerationStats
 import com.integemjack.friday.proto.JournalEntry
@@ -87,6 +88,10 @@ object DemoData {
         assistantChannels = if (scene.startsWith("assistant") || scene == "settings") assistantChannels else emptyList(),
         assistantHasOlder = scene == "assistant",
         openConversationId = if (scene.startsWith("chat")) CHAT_ID else null,
+        // 输入框工具行的模型 / 任务模式选择器
+        engines = engines,
+        defaultEngineID = "claude-sonnet-4.5",
+        defaultTeamMode = "delegatesHeavy",
         chat = when (scene) {
             "chat" -> chat(generating = false)
             "chat-running" -> chat(generating = true)
@@ -107,6 +112,13 @@ object DemoData {
 
     private const val CHAT_ID = "A1"
 
+    private val engines = listOf(
+        EngineInfo("claude-sonnet-4.5", "Anthropic", "claude-sonnet-4.5"),
+        EngineInfo("gpt-5", "OpenAI", "gpt-5"),
+        EngineInfo("glm-4.6", "智谱", "glm-4.6"),
+        EngineInfo("qwen3-local", "本机 friday-llm", "qwen3-30b-a3b"),
+    )
+
     private val summaries = listOf(
         ConversationSummary(
             id = CHAT_ID,
@@ -119,6 +131,7 @@ object DemoData {
             workingDirectoryName = "friday-android",
             permissionMode = "ask",
             engineID = "claude-sonnet-4.5",
+            teamMode = "ultra",
         ),
         ConversationSummary(
             id = "A2",
@@ -337,6 +350,7 @@ object DemoData {
                 pendingApproval = false, canRetry = false, canSend = true,
                 workingDirectory = "/Users/ultra/Desktop/works/friday-android",
                 thinkingLevel = "high", permissionMode = "ask",
+                thinkingLevels = listOf("off", "low", "medium", "high"),
             )
         } else {
             Runtime(
@@ -352,6 +366,7 @@ object DemoData {
                 failedMessageID = "m6", canSend = true,
                 workingDirectory = "/Users/ultra/Desktop/works/friday-android",
                 thinkingLevel = "medium", permissionMode = "ask",
+                thinkingLevels = listOf("off", "low", "medium", "high"),
             )
         }
 
@@ -431,7 +446,7 @@ object DemoData {
             pushRule = "important",
             brainEngineID = "claude-sonnet-4.5",
             sessionEngineID = null,
-            brainThinking = "medium",
+            brainThinking = true,
             toolRounds = 24,
             idleMinutes = 45,
             digestSeconds = 30,

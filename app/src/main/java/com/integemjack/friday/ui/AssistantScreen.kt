@@ -611,65 +611,132 @@ private fun receiptVisual(text: String, status: String, level: String): Pair<Ima
 // MARK: 输入框：跟助手说话
 
 /**
- * 助手页的输入框：跟会话页是**同一个** [Composer]（同样的胶囊、同样的发送 / 停止按钮），
- * 由 [HomeScaffold] 放进 dock，所以这里不画背景、也不自己算 inset。
+ * 助手页的输入框：跟会话页是**同一个** [Composer]（同样的卡片、同样的 ＋附件 / 模型 / 任务模式 / 思考模式、
+ * 同样的发送 / 停止按钮），由 [HomeScaffold] 放进 dock，所以这里不画背景、也不自己算 inset。
  *
+ * 三个选择器改的是助手这边对应的设置：
+ * - 模型：助手下次开会话、往会话里插话用的（AssistantConfig.sessionEngineID，ASSISTANT.md §16.10）；
+ *   「跟新对话一样」= 清掉，不动新对话的默认
+ * - 任务模式：这台新对话的默认（settings.update teamMode），助手新开的会话按它
+ * - 思考模式：助手大脑开不开深度思考（AssistantConfig.brainThinking，只有开 / 关）
+ *
+ * 附件先 file.upload 传到那台，再带着服务端路径 assistant.say（REMOTE.md §6「助手」）。
  * 助手在出字、输入框又空着时，右边是「打断」；打了字就是「发送」（插一句）。
- * 输入框的文字状态由调用方（AppRoot）拿着：切到别的页再回来，打了一半的话还在。
+ * 草稿由调用方（AppRoot）拿着：切到别的页再回来，打了一半的话和附件还在。
  */
 @Composable
-fun AssistantComposer(
-    input: String,
-    onInput: (String) -> Unit,
-) {
+fun AssistantComposer(draft: ComposerDraft) {
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
-    var sayError by remember { mutableStateOf<String?>(null) }
-    val speaking = state.assistant?.speaking == true
-    val direct = directTarget(input)
+    val pickers = rememberAttachmentPickers(draft)
+    var sayError by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val assistant = state.assistant
+    val speaking = assistant?.speaking == true
+    val direct = directTarget(draft.input)
+    val uploading = draft.uploading
+    val empty = draft.isEmpty
+    val usable = state.connected && assistant != null
+
+    // 助手能选的模型：这台的引擎列表（旧服务端 hello 不带时退回助手自己给的那份）
+    val engines = state.usableEngines.ifEmpty {
+        assistant?.engines.orEmpty().map { com.integemjack.friday.proto.EngineInfo(it.id, it.title, it.model) }
+    }
+    val chosenID = assistant?.config?.sessionEngineID?.takeIf { it.isNotEmpty() }
+    val chosen = engines.firstOrNull { it.id == chosenID }
+    val defaultEngine = engines.firstOrNull { it.id == state.defaultEngineID } ?: engines.firstOrNull()
+
+    fun change(what: String, block: suspend () -> Unit) {
+        scope.launch { runCatching { block() }.onFailure { sayError = "没换成$what" to (it.message ?: "") } }
+    }
 
     Composer(
-        value = input,
-        onValueChange = onInput,
+        value = draft.input,
+        onValueChange = { draft.input = it },
         placeholder = when {
             !state.connected -> "连上远程机器才能跟助手说话"
+            uploading -> "附件上传中…"
             speaking -> "想插一句？（空着点右边是打断）"
             else -> "跟助手说点什么…"
         },
         enabled = state.connected,
-        onStop = if (speaking && input.isBlank()) ({ model.client.stopAssistant() }) else null,
+        canSend = !empty && !uploading,
+        busy = uploading && !speaking,
+        onStop = if (speaking && empty) ({ model.client.stopAssistant() }) else null,
         stopDescription = "打断",
         onSend = {
-            val text = input.trim()
-            if (text.isNotEmpty()) {
-                onInput("")
+            val text = draft.input.trim()
+            val paths = draft.readyPaths
+            if (text.isNotEmpty() || paths.isNotEmpty()) {
+                draft.clear()
                 scope.launch {
-                    runCatching { model.client.sayToAssistant(text) }
-                        .onFailure { sayError = it.message }
+                    runCatching { model.client.sayToAssistant(text, paths) }
+                        .onFailure {
+                            if (draft.input.isEmpty()) draft.input = text
+                            sayError = "没送出去" to (it.message ?: "")
+                        }
                 }
             }
         },
-        // 「#短号 …」= 这条不经大脑、原样转给那段会话，先说清楚再发
-        above = if (direct != null) {
-            {
+        tools = {
+            AttachmentButton(
+                enabled = state.connected,
+                onPickMedia = pickers.pickMedia,
+                onPickFile = pickers.pickFile,
+            )
+            ModelPicker(
+                engines = engines,
+                selectedID = chosenID,
+                label = (chosen ?: defaultEngine)?.label ?: "默认模型",
+                enabled = usable,
+                header = "助手开会话、插话用的模型",
+                footnote = "只改助手的，不动新对话的默认",
+                followDefault = defaultEngine?.let { "现在是 ${it.label}" } ?: "跟这台新对话的默认走",
+                onChoose = { picked ->
+                    change("模型") {
+                        model.client.setAssistantSessionEngine(picked.takeIf { it != FOLLOW_DEFAULT_ENGINE })
+                    }
+                },
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            TeamModePicker(
+                current = normalizeTeamMode(state.defaultTeamMode),
+                enabled = state.connected,
+                header = "任务模式（新开的会话）",
+                footnote = "改的是这台新对话的默认：助手新开的会话、你新建的会话都按它",
+                onChoose = { mode -> change("任务模式") { model.client.setDefaultTeamMode(mode) } },
+            )
+            ThinkingPicker(
+                levels = ASSISTANT_THINKING_LEVELS,
+                current = if (assistant?.config?.brainThinking == true) "high" else "off",
+                enabled = usable,
+                header = "思考模式（助手自己）",
+                footnote = "助手想事情、回你话时开不开深度思考",
+                onChoose = { level -> change("思考模式") { model.client.setAssistantBrainThinking(level != "off") } },
+            )
+        },
+        above = {
+            // 「#短号 …」= 这条不经大脑、原样转给那段会话，先说清楚再发
+            if (direct != null) {
                 ComposerNotice(
                     icon = Icons.Filled.Bolt,
                     text = "这条直接发给 #$direct，不经过助手",
                     tint = MaterialTheme.colorScheme.tertiary,
                 )
             }
-        } else {
-            null
+            AttachmentChips(draft.attachments.toList(), onRemove = { id -> draft.remove(id) })
         },
     )
 
-    if (sayError != null) {
+    sayError?.let { (title, message) ->
         AlertDialog(
             onDismissRequest = { sayError = null },
-            title = { Text("没送出去") },
-            text = { Text(sayError ?: "") },
+            title = { Text(title) },
+            text = { Text(message) },
             confirmButton = { TextButton(onClick = { sayError = null }) { Text("知道了") } },
         )
     }
 }
+
+/** 助手大脑的思考只有开 / 关（brainThinking 是布尔）：两档时菜单写「开启 / 关闭」 */
+private val ASSISTANT_THINKING_LEVELS = listOf("off", "high")

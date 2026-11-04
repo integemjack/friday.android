@@ -42,6 +42,10 @@ data class ConversationSummary(
     val workingDirectoryName: String? = null,
     val permissionMode: String? = null,
     val engineID: String? = null,
+    /** 这段对话的思考档位（off / low / medium / high / ultra；没选过不写） */
+    val thinking: String? = null,
+    /** 这段对话的任务模式（solo / delegatesHeavy / ultra；2.9 起，没选过不写 = 跟那台的新对话默认） */
+    val teamMode: String? = null,
 ) {
     companion object {
         fun fromJson(o: JsonObject): ConversationSummary = ConversationSummary(
@@ -55,6 +59,8 @@ data class ConversationSummary(
             workingDirectoryName = o.str("workingDirectoryName"),
             permissionMode = o.str("permissionMode"),
             engineID = o.str("engineID"),
+            thinking = o.str("thinking"),
+            teamMode = o.str("teamMode"),
         )
     }
 }
@@ -91,6 +97,10 @@ data class Runtime(
     val workingDirectory: String? = null,
     val thinkingLevel: String? = null,
     val permissionMode: String? = null,
+    /** 这个模型能调的思考档位；null = 服务端没给（旧版），空 = 这个模型不能调 */
+    val thinkingLevels: List<String>? = null,
+    /** 这段对话实际在用的引擎 id（runtime.engine.id；一个都没接入时没有） */
+    val engineID: String? = null,
 ) {
     companion object {
         fun fromJson(o: JsonObject): Runtime = Runtime(
@@ -107,6 +117,8 @@ data class Runtime(
             workingDirectory = o.str("workingDirectory"),
             thinkingLevel = o.str("thinkingLevel"),
             permissionMode = o.str("permissionMode"),
+            thinkingLevels = if (o["thinkingLevels"] is kotlinx.serialization.json.JsonArray) o.strList("thinkingLevels") else null,
+            engineID = (o["engine"] as? JsonObject)?.str("id"),
         )
     }
 }
@@ -595,6 +607,41 @@ data class ToolInfo(val name: String, val arguments: String?, val result: String
     }
 }
 
+/** 这台机器上的一个引擎（EnginesState.engines 的一项，REMOTE.md §5；只有密钥名，没有值） */
+data class EngineInfo(
+    val id: String,
+    /** 服务商 / 引擎名 */
+    val title: String,
+    /** 实际的模型名（选择器上显示它） */
+    val model: String,
+    /** 关掉的服务的模型：配置留着，模型菜单里不列 */
+    val disabled: Boolean = false,
+) {
+    /** 选择器上显示的名字：模型名优先，没有就引擎名 */
+    val label: String get() = model.ifBlank { title }.ifBlank { "默认模型" }
+
+    companion object {
+        fun fromJson(o: JsonObject): EngineInfo = EngineInfo(
+            id = o.str("id") ?: "",
+            title = o.str("title") ?: "",
+            model = o.str("model") ?: "",
+            disabled = o.bool("disabled") ?: false,
+        )
+    }
+}
+
+/** EnginesState：`{engines: [EngineConfig], defaultEngineID?}`（hello 的 state.engines、engines 事件） */
+data class EnginesState(val engines: List<EngineInfo>, val defaultEngineID: String?) {
+    companion object {
+        fun fromJson(o: JsonObject): EnginesState = EnginesState(
+            engines = (o["engines"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                (it as? JsonObject)?.let { e -> EngineInfo.fromJson(e) }
+            }.orEmpty().filter { it.id.isNotEmpty() },
+            defaultEngineID = o.str("defaultEngineID")?.takeIf { it.isNotEmpty() },
+        )
+    }
+}
+
 /** 助手能用的大脑（AssistantState.engines 的一项） */
 data class AssistantEngine(val id: String, val title: String, val model: String, val supportsTools: Boolean) {
     companion object {
@@ -614,7 +661,8 @@ data class AssistantConfig(
     val pushRule: String, // important / all / none
     val brainEngineID: String?,
     val sessionEngineID: String?,
-    val brainThinking: String?,
+    /** 大脑开不开深度思考（服务端是布尔值） */
+    val brainThinking: Boolean,
     val toolRounds: Int,
     val idleMinutes: Int,
     val digestSeconds: Int,
@@ -631,7 +679,7 @@ data class AssistantConfig(
             pushRule = o.str("pushRule") ?: "important",
             brainEngineID = o.str("brainEngineID"),
             sessionEngineID = o.str("sessionEngineID"),
-            brainThinking = o.str("brainThinking"),
+            brainThinking = o.bool("brainThinking") ?: false,
             toolRounds = o.long("toolRounds")?.toInt() ?: 0,
             idleMinutes = o.long("idleMinutes")?.toInt() ?: 0,
             digestSeconds = o.long("digestSeconds")?.toInt() ?: 0,

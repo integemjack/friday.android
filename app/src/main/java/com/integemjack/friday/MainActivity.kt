@@ -25,6 +25,7 @@ import com.integemjack.friday.ui.AssistantScreen
 import com.integemjack.friday.ui.ChatComposer
 import com.integemjack.friday.ui.ChatDrafts
 import com.integemjack.friday.ui.ChatScreen
+import com.integemjack.friday.ui.ComposerDraft
 import com.integemjack.friday.ui.HomeScaffold
 import com.integemjack.friday.ui.HomeTabs
 import com.integemjack.friday.ui.LocalAppModel
@@ -105,8 +106,8 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
         mutableIntStateOf(if (Demo.startInChat) HomeTabs.CHAT else MainActivity.TAB_ASSISTANT)
     }
     var openError by remember { mutableStateOf<Pair<String, String>?>(null) }
-    // 两个输入框里打了一半的话都提到这一层：切到别的页再回来不丢。会话的按会话分开存
-    var assistantInput by rememberSaveable { mutableStateOf("") }
+    // 两个输入框里打了一半的话（和附件）都提到这一层：切到别的页再回来不丢。会话的按会话分开存
+    val assistantDraft = rememberSaveable(saver = ComposerDraft.Saver) { ComposerDraft() }
     val chatDrafts = remember { ChatDrafts() }
     val requested by tabRequest.collectAsState()
 
@@ -150,7 +151,7 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     // 底部输入框：助手页和会话页是同一个 Composer，只是发给谁不同；活动 / 设置没有输入框
     val dock: (@Composable () -> Unit)? = when (tab) {
         HomeTabs.ASSISTANT -> {
-            { AssistantComposer(input = assistantInput, onInput = { assistantInput = it }) }
+            { AssistantComposer(assistantDraft) }
         }
         HomeTabs.CHAT -> {
             { ChatComposer(chatDrafts) }

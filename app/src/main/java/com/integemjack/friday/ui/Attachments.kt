@@ -112,8 +112,8 @@ fun formatBytes(bytes: Long): String = when {
 }
 
 /**
- * 附件按钮：点开选相册还是选文件。放在 [Composer] 胶囊的最左边，所以是一颗 38dp 的圆（＋），
- * 不用 IconButton（它会把自己撑到 48dp，胶囊被顶高）。
+ * 附件按钮：点开选相册还是选文件。放在 [Composer] 工具行的最左边，是一颗 32dp 的圆（＋），
+ * 跟旁边的选择胶囊一样高；不用 IconButton（它会把自己撑到 48dp，工具行被顶高）。
  */
 @Composable
 fun AttachmentButton(enabled: Boolean, onPickMedia: () -> Unit, onPickFile: () -> Unit) {
@@ -122,7 +122,7 @@ fun AttachmentButton(enabled: Boolean, onPickMedia: () -> Unit, onPickFile: () -
     Box {
         Box(
             Modifier
-                .size(38.dp)
+                .size(32.dp)
                 .clip(CircleShape)
                 .background(if (enabled) scheme.surfaceContainerHigh else Color.Transparent)
                 .clickable(enabled = enabled, role = Role.Button) { expanded = true },
@@ -132,7 +132,7 @@ fun AttachmentButton(enabled: Boolean, onPickMedia: () -> Unit, onPickFile: () -
                 Icons.Filled.Add,
                 contentDescription = "添加附件",
                 tint = if (enabled) scheme.onSurfaceVariant else scheme.onSurfaceVariant.copy(alpha = 0.4f),
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(19.dp),
             )
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {

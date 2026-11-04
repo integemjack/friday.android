@@ -86,8 +86,17 @@ data class FridayState(
     val assistantHasOlder: Boolean = false,
     val assistantLoading: Boolean = false,
     val assistantError: String? = null,
+    /** 这台机器上的引擎（输入框的模型选择器列这些；关掉的服务的不列） */
+    val engines: List<EngineInfo> = emptyList(),
+    /** 新对话默认用的引擎（engineID 空的会话跟着它） */
+    val defaultEngineID: String? = null,
+    /** 那台机器的新对话默认任务模式（settings.get 的 teamMode；没取到是 null，按 solo 显示） */
+    val defaultTeamMode: String? = null,
 ) {
     val connected: Boolean get() = conn is ConnState.Connected
+
+    /** 模型菜单里能选的（关掉的服务的模型不列） */
+    val usableEngines: List<EngineInfo> get() = engines.filterNot { it.disabled }
 }
 
 /**
@@ -186,11 +195,16 @@ class FridayClient(
                 (it as? JsonObject)?.let { s -> ConversationSummary.fromJson(s) }
             }.orEmpty().sortedWith(compareByDescending<ConversationSummary> { it.pinned }.thenByDescending { it.updatedAt })
             val runner = snapshot?.get("runner")?.let { (it as? JsonObject)?.let { r -> RunnerState.fromJson(r) } }
+            val engines = (snapshot?.get("engines") as? JsonObject)?.let { EnginesState.fromJson(it) }
             state.value = state.value.copy(
                 conn = ConnState.Connected(server),
                 summaries = summaries,
                 runner = runner,
+                engines = engines?.engines ?: emptyList(),
+                defaultEngineID = engines?.defaultEngineID,
             )
+            // 新对话默认的任务模式只在 settings 里（hello 不带）：不挡着连接，后台取一下
+            scope.launch { refreshSettings() }
             // 连上就订活动（审批提醒）
             rpc.notify("activity.subscribe")
             if (assistantWanted) runCatching { subscribeAssistant() }
@@ -279,6 +293,10 @@ class FridayClient(
                 state.value = state.value.copy(summaries = list)
             }
             "runner" -> state.value = state.value.copy(runner = RunnerState.fromJson(params))
+            "engines" -> {
+                val engines = EnginesState.fromJson((params["engines"] as? JsonObject) ?: params)
+                state.value = state.value.copy(engines = engines.engines, defaultEngineID = engines.defaultEngineID)
+            }
             "attention" -> state.value = state.value.copy(attentionTick = state.value.attentionTick + 1)
             "activity" -> applyActivity(params)
             "activity.assistant" -> {
@@ -646,10 +664,37 @@ class FridayClient(
         }.onFailure { state.value = state.value.copy(assistantLoading = false) }
     }
 
-    /** 对助手说话（assistant.say） */
-    suspend fun sayToAssistant(text: String) {
+    /**
+     * 对助手说话（assistant.say）。`attachments` 是这台上的文件路径：先 file.upload 传过去，
+     * 主机拷进助手目录、记在这条的 entry.data.attachments 里（REMOTE.md §6「助手」）
+     */
+    suspend fun sayToAssistant(text: String, attachments: List<String> = emptyList()) {
         val rpc = rpc ?: throw Exception("未连接")
-        rpc.request("assistant.say", buildJsonObject { put("text", text) })
+        rpc.request("assistant.say", buildJsonObject {
+            put("text", text)
+            if (attachments.isNotEmpty()) put("attachments", JsonArray(attachments.map { JsonPrimitive(it) }))
+        })
+    }
+
+    /**
+     * 助手页输入框选的模型（AssistantConfig.sessionEngineID，ASSISTANT.md §16.10）：助手下次开会话、
+     * 往会话里插话用它；空 = 没选过（跟新对话一样）。不动新对话的默认
+     */
+    suspend fun setAssistantSessionEngine(engineID: String?) {
+        updateAssistantLocally { it.copy(sessionEngineID = engineID) }
+        updateAssistantConfig("sessionEngineID", JsonPrimitive(engineID.orEmpty()))
+    }
+
+    /** 助手大脑开不开深度思考（AssistantConfig.brainThinking，布尔） */
+    suspend fun setAssistantBrainThinking(on: Boolean) {
+        updateAssistantLocally { it.copy(brainThinking = on) }
+        updateAssistantConfig("brainThinking", JsonPrimitive(on))
+    }
+
+    /** 先在本地改，输入框上的选择器立刻反映；服务端推回来的 assistant.state 会盖回来 */
+    private fun updateAssistantLocally(transform: (AssistantConfig) -> AssistantConfig) {
+        val current = state.value.assistant ?: return
+        state.value = state.value.copy(assistant = current.copy(config = transform(current.config)))
     }
 
     /** 打断正在说的（assistant.stop） */
@@ -702,6 +747,74 @@ class FridayClient(
         val index = list.indexOfFirst { it.id == entry.id }
         if (index >= 0) list[index] = entry else list.add(entry)
         state.value = state.value.copy(assistantEntries = list.sortedBy { it.at })
+    }
+
+    // MARK: 输入框底行：模型 / 任务模式 / 思考模式（REMOTE.md §6 runner.setEngine / setTeamMode / setThinking）
+
+    /** 取那台的设置（只用到新对话默认的任务模式）；旧服务端没有就算了 */
+    suspend fun refreshSettings() {
+        val rpc = rpc ?: return
+        runCatching { rpc.request("settings.get").jsonObject }.onSuccess { settings ->
+            settings.str("teamMode")?.let { state.value = state.value.copy(defaultTeamMode = it) }
+        }
+    }
+
+    /**
+     * 换这段对话的模型（runner.setEngine；工作中换的下一轮生效），同时记成新对话的默认
+     * （settings.update defaultEngineID，同桌面端 / Qt v2.9 起）。先乐观改本地，summaries 事件会盖回来
+     */
+    suspend fun setEngine(conversationID: String, engineID: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        rpc.request("runner.setEngine", buildJsonObject {
+            put("conversationID", conversationID)
+            put("engineID", engineID)
+        })
+        updateSummary(conversationID) { it.copy(engineID = engineID) }
+        runCatching { rpc.request("settings.update", buildJsonObject { put("defaultEngineID", engineID) }) }
+            .onSuccess { state.value = state.value.copy(defaultEngineID = engineID) }
+    }
+
+    /** 换这段对话的思考档位（runner.setThinking {conversationID, level}） */
+    suspend fun setThinking(conversationID: String, level: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        rpc.request("runner.setThinking", buildJsonObject {
+            put("conversationID", conversationID)
+            put("level", level)
+        })
+        updateSummary(conversationID) { it.copy(thinking = level) }
+        updateChat(conversationID) { chat -> chat.copy(runtime = chat.runtime?.copy(thinkingLevel = level)) }
+    }
+
+    /**
+     * 换这段对话的任务模式（runner.setTeamMode，2.9 起有 teamModePerConversation；服务端同时记成新对话默认）。
+     * 没这个功能的旧服务端只能改那台全局的（settings.update teamMode）
+     */
+    suspend fun setTeamMode(conversationID: String, mode: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        val server = (state.value.conn as? ConnState.Connected)?.server
+        if (server?.features?.contains("teamModePerConversation") == true) {
+            rpc.request("runner.setTeamMode", buildJsonObject {
+                put("conversationID", conversationID)
+                put("mode", mode)
+            })
+        } else {
+            rpc.request("settings.update", buildJsonObject { put("teamMode", mode) })
+        }
+        updateSummary(conversationID) { it.copy(teamMode = mode) }
+        state.value = state.value.copy(defaultTeamMode = mode)
+    }
+
+    /** 新对话默认的任务模式（settings.update teamMode）：助手开的会话也跟着它 */
+    suspend fun setDefaultTeamMode(mode: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        rpc.request("settings.update", buildJsonObject { put("teamMode", mode) })
+        state.value = state.value.copy(defaultTeamMode = mode)
+    }
+
+    private fun updateSummary(id: String, transform: (ConversationSummary) -> ConversationSummary) {
+        val list = state.value.summaries
+        if (list.none { it.id == id }) return
+        state.value = state.value.copy(summaries = list.map { if (it.id == id) transform(it) else it })
     }
 
     // MARK: 会话管理

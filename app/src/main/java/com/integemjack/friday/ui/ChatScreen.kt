@@ -1,10 +1,6 @@
 package com.integemjack.friday.ui
 
-import android.net.Uri
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -59,7 +55,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -87,7 +82,6 @@ import com.integemjack.friday.proto.blockText
 import com.integemjack.friday.proto.blockThinking
 import com.integemjack.friday.proto.blockTool
 import kotlinx.coroutines.launch
-import java.util.UUID
 
 /**
  * 会话页：和助手页一样是**顶级页面**——左上角是侧栏入口（不是返回箭头），手指往右滑拉出侧栏，
@@ -216,103 +210,51 @@ fun ChatScreen() {
 
 // MARK: 输入框
 
-/**
- * 一段会话里打了一半的话 + 选了还没发的附件。按会话分开存（[ChatDrafts]）：
- * 在侧栏里换到别的会话再回来，打了一半的话还在；也不会把这段的草稿带到那段去。
- */
-@Stable
-class ChatDraft {
-    var input by mutableStateOf("")
-    val attachments = mutableStateListOf<PendingAttachment>()
-    /** 上传前拷到本地的副本（发完、移除时删掉） */
-    val localCopies = mutableMapOf<String, java.io.File>()
-
-    fun update(id: String, transform: (PendingAttachment) -> PendingAttachment) {
-        val index = attachments.indexOfFirst { it.id == id }
-        if (index >= 0) attachments[index] = transform(attachments[index])
-    }
-
-    fun remove(id: String) {
-        attachments.removeAll { it.id == id }
-        localCopies.remove(id)?.delete()
-    }
-
-    fun clear() {
-        input = ""
-        attachments.clear()
-        localCopies.values.forEach { it.delete() }
-        localCopies.clear()
-    }
-}
-
-/** 所有会话的草稿（AppRoot 拿着，切页不丢） */
+/** 所有会话的草稿（AppRoot 拿着，切页不丢；按会话分开，换到别的会话不会把这段的草稿带过去） */
 @Stable
 class ChatDrafts {
-    private val drafts = mutableMapOf<String, ChatDraft>()
-    fun of(conversationId: String): ChatDraft = drafts.getOrPut(conversationId) { ChatDraft() }
+    private val drafts = mutableMapOf<String, ComposerDraft>()
+    fun of(conversationId: String): ComposerDraft = drafts.getOrPut(conversationId) { ComposerDraft() }
 }
 
 /**
- * 会话页的输入框：[Composer] + 附件按钮，上面挂排队、重试、附件三样。
+ * 会话页的输入框：[Composer]，工具行是 ＋附件、模型、任务模式、思考模式（跟助手页同一套），
+ * 上面挂排队、重试、附件三样。
  *
  * 跟助手页同一套规则：生成中且输入框空着，右边是「停止」；打了字就是「发送」（远程那边排队，
  * 上面的排队条会把它列出来）。
+ *
+ * 模型 / 任务模式 / 思考模式改的都是这段对话的（runner.setEngine / setTeamMode / setThinking；
+ * 工作中换的下一轮生效），换模型同时记成新对话的默认（同桌面端）。
  */
 @Composable
 fun ChatComposer(drafts: ChatDrafts) {
     val model = LocalAppModel.current
-    val context = LocalContext.current
     val state by model.client.stateFlow.collectAsState()
     val chat = state.chat
     val runtime = chat?.runtime
     val scope = rememberCoroutineScope()
     val draft = drafts.of(chat?.id ?: "")
-    var sendError by remember { mutableStateOf<String?>(null) }
+    val pickers = rememberAttachmentPickers(draft)
+    var sendError by remember { mutableStateOf<Pair<String, String>?>(null) }
 
-    fun addAttachments(uris: List<Uri>) {
-        if (uris.isEmpty()) return
-        // 拷贝和上传都按这一刻的草稿记：中途换了会话，进度还是落回原来那段
-        val target = draft
-        val fresh = uris.map { uri ->
-            PendingAttachment(
-                id = UUID.randomUUID().toString(),
-                name = displayName(context, uri),
-                size = displaySize(context, uri),
-            ) to uri
-        }
-        target.attachments.addAll(fresh.map { it.first })
-        fresh.forEach { (item, uri) ->
-            scope.launch {
-                val local = copyToUploadCache(context, uri, item.name)
-                if (local == null) {
-                    target.update(item.id) { it.copy(error = "读不了这个文件") }
-                    return@launch
-                }
-                target.localCopies[item.id] = local
-                runCatching {
-                    model.client.uploadFile(local) { fraction ->
-                        target.update(item.id) { it.copy(progress = fraction) }
-                    }
-                }.onSuccess { path ->
-                    target.update(item.id) { it.copy(progress = 1f, serverPath = path) }
-                }.onFailure { error ->
-                    target.update(item.id) { it.copy(error = error.message ?: "上传失败") }
-                }
-            }
-        }
-    }
-
-    val mediaPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(9)
-    ) { uris -> addAttachments(uris) }
-    val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri -> uri?.let { addAttachments(listOf(it)) } }
-
-    val uploading = draft.attachments.any { !it.done && it.error == null }
-    val readyPaths = draft.attachments.filter { it.done }.mapNotNull { it.serverPath }
+    val uploading = draft.uploading
+    val readyPaths = draft.readyPaths
     val generating = runtime?.generating == true
-    val empty = draft.input.isBlank() && readyPaths.isEmpty()
+    val empty = draft.isEmpty
+
+    // 这段对话现在的模型 / 任务模式 / 思考档位
+    val summary = state.summaries.firstOrNull { it.id == chat?.id }
+    val engines = state.usableEngines
+    val engineID = summary?.engineID?.takeIf { it.isNotEmpty() } ?: runtime?.engineID ?: state.defaultEngineID
+    val engine = engines.firstOrNull { it.id == engineID }
+    val teamMode = summary?.teamMode ?: state.defaultTeamMode
+    val levels = runtime?.thinkingLevels ?: ALL_THINKING_LEVELS
+    val thinking = summary?.thinking ?: runtime?.thinkingLevel
+
+    fun change(what: String, block: suspend () -> Unit) {
+        scope.launch { runCatching { block() }.onFailure { sendError = "没换成$what" to (it.message ?: "") } }
+    }
 
     Composer(
         value = draft.input,
@@ -338,20 +280,38 @@ fun ChatComposer(drafts: ChatDrafts) {
                         .onFailure {
                             // 没送出去：把话放回去（附件已经在远程了，路径丢了也只能重选）
                             if (target.input.isEmpty()) target.input = text
-                            sendError = it.message ?: "发送失败"
+                            sendError = "没送出去" to (it.message ?: "发送失败")
                         }
                 }
             }
         },
-        leading = {
+        tools = {
+            val id = chat?.id
             AttachmentButton(
                 enabled = chat != null,
-                onPickMedia = {
-                    mediaPicker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                    )
-                },
-                onPickFile = { filePicker.launch(arrayOf("*/*")) },
+                onPickMedia = pickers.pickMedia,
+                onPickFile = pickers.pickFile,
+            )
+            ModelPicker(
+                engines = engines,
+                selectedID = engine?.id,
+                label = engine?.label ?: "默认模型",
+                enabled = id != null,
+                footnote = "只换这段对话的，同时记成新对话的默认；正在跑的下一轮生效",
+                onChoose = { picked -> if (id != null) change("模型") { model.client.setEngine(id, picked) } },
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            TeamModePicker(
+                current = normalizeTeamMode(teamMode),
+                enabled = id != null,
+                footnote = "只换这段对话的，同时记成新对话的默认",
+                onChoose = { mode -> if (id != null) change("任务模式") { model.client.setTeamMode(id, mode) } },
+            )
+            ThinkingPicker(
+                levels = levels,
+                current = thinking,
+                enabled = id != null,
+                onChoose = { level -> if (id != null) change("思考模式") { model.client.setThinking(id, level) } },
             )
         },
         above = {
@@ -380,10 +340,10 @@ fun ChatComposer(drafts: ChatDrafts) {
         },
     )
 
-    sendError?.let { message ->
+    sendError?.let { (title, message) ->
         AlertDialog(
             onDismissRequest = { sendError = null },
-            title = { Text("没送出去") },
+            title = { Text(title) },
             text = { Text(message) },
             confirmButton = { TextButton(onClick = { sendError = null }) { Text("知道了") } },
         )
