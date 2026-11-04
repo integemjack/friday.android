@@ -124,6 +124,8 @@ private object ToolEventSerializer : kotlinx.serialization.KSerializer<ToolEvent
             if (value.queued) put("queued", true)
             if (value.stopped) put("stopped", true)
             value.agentName?.let { put("agentName", it) }
+            value.linesAdded?.let { put("linesAdded", it) }
+            value.linesRemoved?.let { put("linesRemoved", it) }
             if (value.media.isNotEmpty()) {
                 put("media", JsonArray(value.media.map { m ->
                     buildJsonObject {

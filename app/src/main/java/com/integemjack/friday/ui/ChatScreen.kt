@@ -75,6 +75,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -83,11 +86,14 @@ import com.integemjack.friday.proto.ChatMessage
 import com.integemjack.friday.proto.MessageBlock
 import com.integemjack.friday.proto.QueuedInput
 import com.integemjack.friday.proto.Runtime
+import com.integemjack.friday.proto.TaskSnapshot
 import com.integemjack.friday.proto.ToolEvent
 import com.integemjack.friday.proto.blockMedia
 import com.integemjack.friday.proto.blockText
 import com.integemjack.friday.proto.blockThinking
 import com.integemjack.friday.proto.blockTool
+import com.integemjack.friday.proto.fileChange
+import com.integemjack.friday.proto.fileLineCounts
 import kotlinx.coroutines.launch
 
 /**
@@ -194,6 +200,9 @@ fun ChatScreen() {
                     Box {
                         MessageItem(
                             message = message,
+                            // 正在写的这条（刚发出去时服务端先建一条空的、还在 prefill）：没出东西时显示「思考中…」，不是「无内容」
+                            generating = runtime?.generating == true && message.role == "assistant" &&
+                                message.id == messages.lastOrNull()?.id,
                             workingDirectory = workingDirectory,
                             branch = branches[message.id],
                             onSwitchBranch = { child, parentKey -> model.client.selectBranch(child, parentKey) },
@@ -280,6 +289,10 @@ fun ChatComposer(drafts: ChatDrafts) {
     val thinking = effectiveThinking(summary?.thinking ?: runtime?.thinkingLevel, levels)
     val directory = chat?.workingDirectory?.takeIf { it.isNotBlank() }
     val server = (state.conn as? com.integemjack.friday.proto.ConnState.Connected)?.server
+    // 这段会话的任务状态（activity 快照 / step 事件）和派到后台的子 Agent（team 事件）
+    val task = state.activities.firstOrNull { it.id == id }?.task
+    val background = backgroundRuns(state.team, id)
+    var agentsOpen by remember { mutableStateOf(false) }
 
     fun change(what: String, block: suspend () -> Unit) {
         scope.launch { runCatching { block() }.onFailure { sendError = "没换成$what" to (it.message ?: "") } }
@@ -329,6 +342,9 @@ fun ChatComposer(drafts: ChatDrafts) {
             }
         },
         above = {
+            // 任务状态（智能体记下的目标和步骤）、后台的子 Agent：在排队、重试上面
+            task?.let { TaskBar(it, generating) }
+            BackgroundAgentsBar(background, onOpen = { agentsOpen = true })
             runtime?.let { rt -> QueueBar(rt) }
             if (runtime?.canRetry == true && !generating) {
                 ComposerNotice(
@@ -414,6 +430,19 @@ fun ChatComposer(drafts: ChatDrafts) {
             ),
         )
         ComposerSheet(menu, onDismiss = { sheetOpen = false })
+    }
+
+    if (agentsOpen) {
+        BackgroundAgentsSheet(
+            runs = background,
+            onStop = { agentID ->
+                scope.launch {
+                    runCatching { model.client.stopAgent(agentID) }
+                        .onFailure { sendError = "没停下" to (it.message ?: "") }
+                }
+            },
+            onDismiss = { agentsOpen = false },
+        )
     }
 
     sendError?.let { (title, message) ->
@@ -541,6 +570,7 @@ private fun QueuedRow(item: QueuedInput) {
 @Composable
 private fun MessageItem(
     message: ChatMessage,
+    generating: Boolean,
     workingDirectory: String?,
     branch: BranchInfo?,
     onSwitchBranch: (child: String, parentKey: String) -> Unit,
@@ -576,7 +606,7 @@ private fun MessageItem(
                     .combinedClickable(onClick = {}, onLongClick = onLongPress)
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) { MessageBlocks(message, workingDirectory) }
+            ) { MessageBlocks(message, workingDirectory, generating = false) }
         } else {
             // 没有气泡也就没有按下去的那块底色：长按不画水波纹，弹出菜单就是反馈
             Column(
@@ -589,7 +619,7 @@ private fun MessageItem(
                         onLongClick = onLongPress,
                     ),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) { MessageBlocks(message, workingDirectory) }
+            ) { MessageBlocks(message, workingDirectory, generating) }
         }
         if (message.error != null) {
             Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -625,16 +655,25 @@ private fun MessageItem(
 }
 
 @Composable
-private fun MessageBlocks(message: ChatMessage, workingDirectory: String?) {
-    message.blocks.forEach { block -> BlockView(block, workingDirectory) }
-    if (message.blocks.none { b -> blockText(b) != null || blockTool(b) != null || blockMedia(b) != null }) {
-        Text(
+private fun MessageBlocks(message: ChatMessage, workingDirectory: String?, generating: Boolean) {
+    BlockList(message.blocks, workingDirectory)
+    if (message.blocks.any(::isVisibleBlock)) return
+    when {
+        // 刚发出去、还没出第一个字 / 第一步：这条就是在跑的那条
+        generating -> GeneratingDots()
+        // 出错、被停的下面各有一行说明，不再叠一句「无内容」
+        message.error != null || message.stoppedByUser -> {}
+        else -> Text(
             "（无内容）",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
+
+/** 画得出东西的块（思考也算：只有思考的那条显示「思考 …」就够了） */
+private fun isVisibleBlock(block: MessageBlock): Boolean =
+    blockText(block) != null || blockThinking(block) != null || blockTool(block) != null || blockMedia(block) != null
 
 /** 同一条消息有几个分支时左右切（runner.selectBranch） */
 @Composable
@@ -747,8 +786,8 @@ private fun ThinkingBlock(content: String) {
 }
 
 /**
- * 工具：默认一行（状态图标 + 名字；没成 / 等确认才在右边写一个字样），下面一行结果的第一行。
- * 不包卡片，跟正文靠颜色分开；点一下展开参数、结果和子 Agent 的运行记录
+ * 工具：只一行（状态图标 + 名字 + 结果的第一行；没成 / 等确认才在右边写一个字样），结果不再另起一行。
+ * 不包卡片，跟正文靠颜色分开；点一下展开参数、结果和子 Agent 的运行记录（里面的操作同样一行一个）
  */
 @Composable
 fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
@@ -770,47 +809,64 @@ fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
         "awaitingApproval" -> Icons.Filled.Queue
         else -> Icons.Filled.Terminal
     }
+    // 改文件的（edit_file / write_file）：参数里还原出改了什么，画 diff；参数还没流完时是 null
+    val change = remember(tool.name, tool.arguments) { fileChange(tool) }
+    val lineCounts = remember(tool.name, tool.arguments, tool.linesAdded, tool.linesRemoved) { fileLineCounts(tool) }
+    // 记下任务状态（update_task_state）：行里写进度，点开是步骤清单，不看参数 JSON
+    val taskState = remember(tool.name, tool.arguments) {
+        if (tool.name == "update_task_state") TaskSnapshot.fromToolArguments(tool.arguments) else null
+    }
     Column(Modifier.fillMaxWidth().animateContentSize()) {
-        Column(
+        // 每个操作只占一行（状态图标 + 名字 + 结果第一行 + 要注意时的字样），完整结果点开再看
+        Row(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(6.dp))
                 .clickable { expanded = !expanded }
                 .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.width(LineIndent)) {
-                    if (tool.status == "running") {
-                        CircularProgressIndicator(Modifier.padding(1.dp).size(12.dp), strokeWidth = 1.5.dp)
-                    } else {
-                        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
-                    }
-                }
-                Text(
-                    tool.title?.ifBlank { tool.name } ?: tool.name,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = scheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                if (label != null) {
-                    Spacer(Modifier.width(8.dp))
-                    Text(label, style = MaterialTheme.typography.labelSmall, color = tint)
+            Box(Modifier.width(LineIndent)) {
+                if (tool.status == "running") {
+                    CircularProgressIndicator(Modifier.padding(1.dp).size(12.dp), strokeWidth = 1.5.dp)
+                } else {
+                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
                 }
             }
-            if (!expanded) {
-                val brief = tool.result.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
-                if (!brief.isNullOrBlank()) {
-                    Text(
-                        brief,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = scheme.onSurfaceVariant.copy(alpha = 0.75f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(start = LineIndent),
-                    )
-                }
+            // 名字后面跟着结果的第一行（淡一点、小一号），同一行放不下就截掉；
+            // 改文件的跟的是文件名，右边「+12 −3」
+            val brief = when {
+                expanded -> null
+                change != null -> change.fileName
+                taskState != null -> if (taskState.steps.isEmpty()) taskState.goal
+                else "进度 ${taskState.done}/${taskState.steps.size}" + (taskState.current?.text?.let { " · $it" } ?: "")
+                else -> tool.result.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+            }
+            Text(
+                buildAnnotatedString {
+                    append(tool.title?.ifBlank { tool.name } ?: tool.name)
+                    if (!brief.isNullOrBlank()) {
+                        withStyle(
+                            SpanStyle(
+                                color = scheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                            )
+                        ) { append("  $brief") }
+                    }
+                },
+                style = MaterialTheme.typography.labelLarge,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            lineCounts?.let { (added, removed) ->
+                Spacer(Modifier.width(8.dp))
+                DiffCounts(added, removed)
+            }
+            if (label != null) {
+                Spacer(Modifier.width(8.dp))
+                Text(label, style = MaterialTheme.typography.labelSmall, color = tint)
             }
         }
         // 看图 / 看视频 / 听录音：媒体直接内嵌（不用点开）
@@ -826,14 +882,33 @@ fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
                 if (!tool.preview.isNullOrBlank()) {
                     Text(tool.preview!!, style = MaterialTheme.typography.bodySmall)
                 }
-                if (tool.arguments.isNotBlank() && tool.arguments != "{}") {
-                    MonospaceBlock(tool.arguments.take(2000))
+                if (change != null) {
+                    // 改文件：看 diff，不看参数 JSON；结果只留第一句（「已修改 …：替换了 1 处」），失败了才整段给
+                    FileDiffView(change)
+                    val result = if (tool.status == "failed") tool.result.take(4000)
+                    else tool.result.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+                    if (result.isNotBlank()) {
+                        Text(
+                            result,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (tool.status == "failed") scheme.error else scheme.onSurfaceVariant,
+                        )
+                    }
+                } else if (taskState != null) {
+                    TaskChecklist(taskState)
+                    if (tool.status == "failed" && tool.result.isNotBlank()) {
+                        Text(tool.result.take(2000), style = MaterialTheme.typography.bodySmall, color = scheme.error)
+                    }
+                } else {
+                    if (tool.arguments.isNotBlank() && tool.arguments != "{}") {
+                        MonospaceBlock(tool.arguments.take(2000))
+                    }
+                    if (tool.result.isNotBlank()) {
+                        MonospaceBlock(tool.result.take(4000))
+                    }
                 }
-                if (tool.result.isNotBlank()) {
-                    MonospaceBlock(tool.result.take(4000))
-                }
-                // 子 Agent 运行记录（递归一层）
-                tool.transcript.forEach { BlockView(it, workingDirectory) }
+                // 子 Agent 运行记录（递归一层），连续的操作一样收起来
+                BlockList(tool.transcript, workingDirectory)
             }
         }
     }

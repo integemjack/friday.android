@@ -269,6 +269,9 @@ data class ToolEvent(
     val agentName: String? = null,
     val media: List<MediaAttachment> = emptyList(),
     val transcript: List<MessageBlock> = emptyList(),
+    /** 改文件的工具：加了几行、删了几行（服务端算好的；没有 = 不是改文件的或旧服务端） */
+    val linesAdded: Int? = null,
+    val linesRemoved: Int? = null,
 ) {
     companion object {
         fun fromJson(o: JsonObject): ToolEvent {
@@ -291,6 +294,8 @@ data class ToolEvent(
                 agentName = o.str("agentName"),
                 media = MediaAttachment.listFrom(o["media"]),
                 transcript = transcript,
+                linesAdded = o.long("linesAdded")?.toInt(),
+                linesRemoved = o.long("linesRemoved")?.toInt(),
             )
         }
     }
@@ -483,6 +488,9 @@ data class SessionActivity(
     val currentToolSummary: String?,
     val updatedAt: String,
 ) {
+    /** 这段会话的任务状态（没记过 = null） */
+    val task: TaskSnapshot? get() = TaskSnapshot(taskGoal, taskSteps).takeUnless { it.isEmpty }
+
     companion object {
         fun fromJson(o: JsonObject): SessionActivity = SessionActivity(
             id = o.str("id") ?: "",
@@ -510,8 +518,11 @@ data class RunnerState(
     val stopping: List<String>,
     val pendingApproval: List<String>,
     val pendingQuestion: List<String>,
+    /** 有子 Agent 在后台跑的会话（主 Agent 这一轮可能已经说完了） */
+    val backgroundAgents: List<String> = emptyList(),
 ) {
     fun isGenerating(id: String) = generating.contains(id)
+    fun hasBackground(id: String) = backgroundAgents.contains(id)
 
     companion object {
         fun fromJson(o: JsonObject): RunnerState = RunnerState(
@@ -519,7 +530,97 @@ data class RunnerState(
             stopping = o.strList("stopping"),
             pendingApproval = o.strList("pendingApproval"),
             pendingQuestion = o.strList("pendingQuestion"),
+            backgroundAgents = o.strList("backgroundAgents"),
         )
+    }
+}
+
+/**
+ * 一个子 Agent（REMOTE.md §5 TeamState 的 Run）。状态行（在做什么 · 多久前有动静 · 第几步 · 跑了多久）
+ * 由客户端按这些字段和当前时间算
+ */
+data class TeamRun(
+    val id: String,
+    val name: String,
+    /** 属于哪段会话 */
+    val conversationID: String,
+    /** 主 Agent 派到后台的（这一轮说完了它还接着跑） */
+    val background: Boolean,
+    /** 独立的线：第一层后台子 Agent 和它往下派的，不跟着这一轮停 */
+    val detached: Boolean,
+    val depth: Int,
+    val running: Boolean,
+    val stopRequested: Boolean,
+    /** generating / tool / waitingChildren / waitingApproval / queued；没有 = null */
+    val activityKind: String?,
+    val activityTitle: String?,
+    val steps: Int,
+    val started: String?,
+    val lastOutput: String?,
+    val speed: Double?,
+) {
+    companion object {
+        fun fromJson(o: JsonObject): TeamRun {
+            val activity = o["activity"] as? JsonObject
+            return TeamRun(
+                id = o.str("id") ?: "",
+                name = o.str("name") ?: "",
+                conversationID = o.str("conversationID") ?: "",
+                background = o.bool("background") ?: false,
+                detached = o.bool("detached") ?: false,
+                depth = o.long("depth")?.toInt() ?: 1,
+                running = o.bool("running") ?: false,
+                stopRequested = o.bool("stopRequested") ?: false,
+                activityKind = activity?.str("kind"),
+                activityTitle = activity?.str("title"),
+                steps = o.long("steps")?.toInt() ?: 0,
+                started = o.str("started"),
+                lastOutput = o.str("lastOutput"),
+                speed = o.dbl("speed"),
+            )
+        }
+
+        /** TeamState：`{runs:[Run]}` */
+        fun listFrom(o: JsonObject?): List<TeamRun> =
+            (o?.get("runs") as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                (it as? JsonObject)?.let(::fromJson)
+            }.orEmpty()
+    }
+}
+
+/**
+ * 任务状态（智能体用 update_task_state 记下的）：目标、步骤、要守的约束。
+ * 两个来源同一个样子：activity 事件 / 快照里的 task，和消息里那次 update_task_state 调用的参数
+ */
+data class TaskSnapshot(
+    val goal: String?,
+    val steps: List<TaskStep>,
+    val constraints: List<String> = emptyList(),
+) {
+    val done: Int get() = steps.count { it.status == "done" }
+    val current: TaskStep? get() = steps.firstOrNull { it.status == "doing" }
+    val finished: Boolean get() = steps.isNotEmpty() && steps.all { it.status == "done" }
+    val isEmpty: Boolean get() = goal.isNullOrBlank() && steps.isEmpty()
+
+    companion object {
+        fun stepsFrom(element: JsonElement?): List<TaskStep> =
+            (element as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                val s = it as? JsonObject ?: return@mapNotNull null
+                TaskStep(s.str("text") ?: s.str("step") ?: s.str("title") ?: "", s.str("status") ?: "todo")
+            }.orEmpty()
+
+        /** update_task_state 的参数（参数还在流式写、解不开时 null） */
+        fun fromToolArguments(arguments: String): TaskSnapshot? {
+            val o = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(arguments) }.getOrNull() as? JsonObject
+                ?: return null
+            val snapshot = TaskSnapshot(
+                goal = o.str("goal"),
+                steps = stepsFrom(o["steps"]),
+                constraints = (o["constraints"] as? kotlinx.serialization.json.JsonArray)
+                    ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }.orEmpty(),
+            )
+            return snapshot.takeUnless { it.isEmpty }
+        }
     }
 }
 

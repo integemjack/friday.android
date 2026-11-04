@@ -113,6 +113,7 @@ fun SessionsScreen(
                                     s,
                                     selected = s.id == selectedId,
                                     generating = state.runner?.isGenerating(s.id) == true,
+                                    background = state.runner?.hasBackground(s.id) == true,
                                     onClick = {
                                         closeDrawer?.invoke()
                                         onOpen(s.id)
@@ -394,6 +395,8 @@ private fun SummaryRow(
     generating: Boolean,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
+    /** 主 Agent 这一轮说完了，派到后台的子 Agent 还在跑 */
+    background: Boolean = false,
 ) {
     val title = s.title.ifBlank { "（无标题）" }
     val scheme = MaterialTheme.colorScheme
@@ -458,6 +461,10 @@ private fun SummaryRow(
             generating -> {
                 Spacer(Modifier.width(8.dp))
                 CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            }
+            background -> {
+                Spacer(Modifier.width(8.dp))
+                Chip("后台", color = scheme.tertiary)
             }
             s.hasDraft -> {
                 Spacer(Modifier.width(8.dp))

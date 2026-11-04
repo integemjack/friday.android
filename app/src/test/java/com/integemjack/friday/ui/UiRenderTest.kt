@@ -219,12 +219,256 @@ class UiRenderTest {
 
         compose.onNodeWithText("帮我看这张图").assertExists()
         compose.onNodeWithText("这是一只猫").assertExists()
-        compose.onNodeWithText("看图 · a.png").assertExists()
 
         // 思考块默认折着，点开才显示内容
         assertNoText("先看看这是什么")
         compose.onNodeWithText("思考 …").performClick()
         compose.onNodeWithText("先看看这是什么").assertExists()
+
+        // 操作只一行：结果的第一行跟在名字后面（同一个文本），不另起一行
+        compose.onNodeWithText("看图 · a.png  是只橘猫").assertExists()
+        assertNoText("是只橘猫")
+        // 点开：名字后面不再跟结果，完整结果在下面
+        compose.onNodeWithText("看图 · a.png  是只橘猫").performClick()
+        compose.onNodeWithText("看图 · a.png").assertExists()
+        compose.onNodeWithText("是只橘猫").assertExists()
+    }
+
+    @Test
+    fun `连续操作收成一行，点开一行一个；改文件点开看 diff`() {
+        val edit = MessageBlock(
+            "e1",
+            buildJsonObject {
+                put("tool", buildJsonObject {
+                    put("_0", buildJsonObject {
+                        put("id", "e1"); put("name", "edit_file"); put("title", "修改文件")
+                        put("arguments", """{"path":"/home/u/proj/src/a.c","edits":[{"old_text":"int a;","new_text":"int a = 1;"}]}""")
+                        put("status", "succeeded"); put("result", "已修改 /home/u/proj/src/a.c：替换了 1 处")
+                        put("linesAdded", 1); put("linesRemoved", 1)
+                    })
+                })
+            },
+        )
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(
+                    listOf(
+                        message("1", "user", listOf(textBlock("b1", "改一下"))),
+                        message(
+                            "2", "assistant",
+                            listOf(toolBlock("x1", "run_shell", "执行命令", "succeeded", "ok"), edit, textBlock("s1", "改好了")),
+                            parent = "1", at = "2026-01-01T00:00:01Z",
+                        ),
+                    )
+                ),
+            )
+        )
+        renderChat(model)
+
+        // 收起来只有一行：几个操作、做了哪几种、改了多少行
+        compose.onNodeWithText("2 个操作  执行命令、修改文件").assertExists()
+        compose.onNodeWithText("+1 −1").assertExists()
+        assertNoText("执行命令  ok")
+        compose.onNodeWithText("改好了").assertExists()
+
+        // 点开：一行一个，改文件的那行跟着文件名
+        compose.onNodeWithText("2 个操作  执行命令、修改文件").performClick()
+        compose.onNodeWithText("执行命令  ok").assertExists()
+        compose.onNodeWithText("修改文件  a.c").assertExists()
+
+        // 再点改文件那行：看到 diff（删的、加的），不是参数 JSON
+        assertNoText("int a = 1;")
+        compose.onNodeWithText("修改文件  a.c").performClick()
+        compose.onNodeWithText("int a;").assertExists()
+        compose.onNodeWithText("int a = 1;").assertExists()
+        compose.onNodeWithText("已修改 /home/u/proj/src/a.c：替换了 1 处").assertExists()
+    }
+
+    private fun taskActivity(steps: List<com.integemjack.friday.proto.TaskStep>, goal: String = "发 v1.2") =
+        com.integemjack.friday.proto.SessionActivity(
+            id = "C1", title = "测试会话", status = "running", taskGoal = goal, taskSteps = steps,
+            approvals = emptyList(), currentToolTitle = null, currentToolSummary = null, updatedAt = "2026-01-01T00:00:00Z",
+        )
+
+    private fun step(text: String, status: String) = com.integemjack.friday.proto.TaskStep(text, status)
+
+    @Test
+    fun `任务条挂在输入框上面：在做的那步和进度，点开看目标和全部步骤`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(listOf(message("1", "user", listOf(textBlock("b1", "发版")))), runtime = runtime(generating = true)),
+                activities = listOf(taskActivity(listOf(step("写 CHANGELOG", "done"), step("打 tag", "doing"), step("推送", "todo")))),
+            )
+        )
+        renderChat(model)
+
+        compose.onNodeWithText("打 tag").assertExists()
+        compose.onNodeWithText("1/3").assertExists()
+        assertNoText("写 CHANGELOG")
+
+        compose.onNodeWithContentDescription("展开任务").performClick()
+        compose.onNodeWithText("发 v1.2").assertExists()
+        compose.onNodeWithText("写 CHANGELOG").assertExists()
+        compose.onNodeWithText("推送").assertExists()
+    }
+
+    @Test
+    fun `任务做完了也不在跑了，任务条就不挂`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(listOf(message("1", "user", listOf(textBlock("b1", "发版")))), runtime = runtime(generating = false)),
+                activities = listOf(taskActivity(listOf(step("写 CHANGELOG", "done"), step("打 tag", "done")))),
+            )
+        )
+        renderChat(model)
+        assertNoText("2/2")
+        assertNoDescription("展开任务")
+    }
+
+    private fun backgroundRun(id: String, name: String, title: String = "执行命令") = com.integemjack.friday.proto.TeamRun(
+        id = id, name = name, conversationID = "C1", background = true, detached = true, depth = 1,
+        running = true, stopRequested = false, activityKind = "tool", activityTitle = title, steps = 4,
+        started = "2026-01-01T00:00:00Z", lastOutput = "删了 3 个缓存目录", speed = null,
+    )
+
+    @Test
+    fun `后台有子 Agent 在跑时输入框上面挂一行`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(listOf(message("1", "user", listOf(textBlock("b1", "清理一下"))))),
+                team = listOf(backgroundRun("r1", "清理执行员")),
+            )
+        )
+        renderChat(model)
+        compose.onNodeWithText("1 个子 Agent 在后台").assertExists()
+        compose.onNodeWithContentDescription("看后台的子 Agent").assertExists()
+    }
+
+    @Test
+    fun `后台子 Agent 面板：每个一行写在做什么、第几步，能单独停、能全部停`() {
+        val stopped = mutableListOf<String>()
+        render(modelWith(FridayState(conn = connected))) {
+            BackgroundAgentsContent(
+                listOf(backgroundRun("r1", "清理执行员"), backgroundRun("r2", "测试员", title = "读取文件")),
+                onStop = { stopped += it },
+            )
+        }
+        compose.onNodeWithText("清理执行员").assertExists()
+        compose.onNodeWithText("测试员").assertExists()
+        assertEquals(2, compose.onAllNodesWithText("删了 3 个缓存目录").fetchSemanticsNodes().size)
+        assertEquals(
+            1,
+            compose.onAllNodesWithText("在执行「读取文件」 · 第 4 步", substring = true).fetchSemanticsNodes().size,
+        )
+        compose.onAllNodesWithText("停下")[0].performClick()
+        assertEquals(listOf("r1"), stopped)
+        compose.onNodeWithText("全部停下（2）").performClick()
+        assertEquals(listOf("r1", "r1", "r2"), stopped)
+    }
+
+    @Test
+    fun `消息里的记下任务状态：行里写进度，点开是步骤清单不是 JSON`() {
+        val record = MessageBlock(
+            "u1",
+            buildJsonObject {
+                put("tool", buildJsonObject {
+                    put("_0", buildJsonObject {
+                        put("id", "u1"); put("name", "update_task_state"); put("title", "记下任务状态")
+                        put("arguments", """{"goal":"发 v1.2","steps":[{"status":"done","text":"写 CHANGELOG"},{"status":"doing","text":"打 tag"}]}""")
+                        put("status", "succeeded"); put("result", "已记下。")
+                    })
+                })
+            },
+        )
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(
+                    listOf(
+                        message("1", "user", listOf(textBlock("b1", "发版"))),
+                        message("2", "assistant", listOf(record), parent = "1", at = "2026-01-01T00:00:01Z"),
+                    )
+                ),
+            )
+        )
+        renderChat(model)
+
+        compose.onNodeWithText("记下任务状态  进度 1/2 · 打 tag").assertExists()
+        compose.onNodeWithText("记下任务状态  进度 1/2 · 打 tag").performClick()
+        compose.onNodeWithText("发 v1.2").assertExists()
+        compose.onNodeWithText("写 CHANGELOG").assertExists()
+        assertNoText("已记下。")
+    }
+
+    @Test
+    fun `刚发出去、智能体那条还空着时显示思考中，不是无内容`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(
+                    listOf(
+                        message("1", "user", listOf(textBlock("b1", "开始吧"))),
+                        message("2", "assistant", emptyList(), parent = "1", at = "2026-01-01T00:00:01Z"),
+                    ),
+                    runtime = runtime(generating = true),
+                ),
+            )
+        )
+        renderChat(model)
+
+        compose.onNodeWithText("思考中…").assertExists()
+        assertNoText("（无内容）")
+    }
+
+    @Test
+    fun `只有思考的那条不再多一句无内容`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(
+                    listOf(
+                        message("1", "user", listOf(textBlock("b1", "想想"))),
+                        message("2", "assistant", listOf(thinkingBlock("b2", "嗯")), parent = "1", at = "2026-01-01T00:00:01Z"),
+                    ),
+                ),
+            )
+        )
+        renderChat(model)
+
+        compose.onNodeWithText("思考 …").assertExists()
+        assertNoText("（无内容）")
+    }
+
+    @Test
+    fun `跑完了真的什么都没有才写无内容`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(
+                    listOf(
+                        message("1", "user", listOf(textBlock("b1", "在吗"))),
+                        message("2", "assistant", emptyList(), parent = "1", at = "2026-01-01T00:00:01Z"),
+                    ),
+                    runtime = runtime(generating = false),
+                ),
+            )
+        )
+        renderChat(model)
+
+        compose.onNodeWithText("（无内容）").assertExists()
+        assertNoText("思考中…")
     }
 
     /** 一长串一问一答（一条接一条挂在上一条下面）；最后一条可以塞很多段，比一屏还长 */

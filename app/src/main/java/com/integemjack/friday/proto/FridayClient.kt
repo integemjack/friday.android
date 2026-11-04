@@ -74,6 +74,8 @@ data class FridayState(
     val summaries: List<ConversationSummary> = emptyList(),
     val runner: RunnerState? = null,
     val activities: List<SessionActivity> = emptyList(),
+    /** 这台的子 Agent（TeamState.runs）：会话页的「后台」标签和面板用 */
+    val team: List<TeamRun> = emptyList(),
     /** attention 事件计数（有待确认的调用时 +1，后台时据此发系统通知） */
     val attentionTick: Long = 0,
     /** 当前打开的会话 id（null = 没开） */
@@ -238,6 +240,7 @@ class FridayClient(
                 cachedAt = null,
                 summaries = summaries,
                 runner = runner,
+                team = TeamRun.listFrom(snapshot?.get("team") as? JsonObject),
                 engines = engines?.engines ?: emptyList(),
                 defaultEngineID = engines?.defaultEngineID,
                 directories = directories,
@@ -245,8 +248,9 @@ class FridayClient(
             )
             // 新对话默认的任务模式只在 settings 里（hello 不带）：不挡着连接，后台取一下
             scope.launch { refreshSettings() }
-            // 连上就订活动（审批提醒）
-            rpc.notify("activity.subscribe")
+            // 连上就订活动（审批提醒、任务状态）：要回复里的快照（以前 notify 拿不到快照，
+            // 之后的事件又只更新已有的条目，活动列表一直是空的）
+            scope.launch { refreshActivities() }
             if (assistantWanted) runCatching { subscribeAssistant() }
             // 开着一段会话（断线前开的 / 离线时看的快照）：重新订上，换成实时的
             state.value.openConversationId?.let { id -> scope.launch { runCatching { subscribeConversation(id) } } }
@@ -325,6 +329,7 @@ class FridayClient(
             conn = ConnState.Disconnected,
             runner = null,
             activities = emptyList(),
+            team = emptyList(),
             openConversationId = null,
             chat = null,
             cachedAt = if (dataBotId > 0) since else null,
@@ -374,6 +379,8 @@ class FridayClient(
                 state.value = state.value.copy(summaries = list)
             }
             "runner" -> state.value = state.value.copy(runner = RunnerState.fromJson(params))
+            // 子 Agent 登记 / 注销、在做什么、第几步变了（整份 TeamState）
+            "team" -> state.value = state.value.copy(team = TeamRun.listFrom(params))
             "directories" -> state.value = state.value.copy(directories = recentDirectories(params))
             "engines" -> {
                 val engines = EnginesState.fromJson((params["engines"] as? JsonObject) ?: params)
@@ -419,54 +426,8 @@ class FridayClient(
     }
 
     private fun applyActivity(params: JsonObject) {
-        val s = params.str("conversationID")
-        val kind = params.str("kind")
-        // ActivityEvent：本地按 conversationID 合并已有条目；approvals 全量给出
-        val id = s ?: return
         val current = state.value.activities
-        val approvals = params["approvals"] as? kotlinx.serialization.json.JsonArray
-        if (approvals != null || kind == "approval") {
-            val list = approvals?.mapNotNull { (it as? JsonObject)?.let { a -> PendingApproval.fromJson(a) } }
-            if (list != null) {
-                val updated = current.filter { it.id != id }.toMutableList()
-                if (list.isNotEmpty() || kind == "started") {
-                    // 保留其他字段，仅当条目存在时更新 approvals
-                    val existing = current.firstOrNull { it.id == id }
-                    if (existing != null) updated.add(existing.copy(approvals = list))
-                }
-                state.value = state.value.copy(activities = updated.sortedByDescending { it.updatedAt })
-                return
-            }
-        }
-        // 简单事件：标题/工具/状态就刷新（活动详情重新订阅太重，首版用 activity.subscribe 的快照 + 就地更新摘要）
-        val existing = current.firstOrNull { it.id == id } ?: return
-        val title = params.str("title") ?: existing.title
-        val toolTitle = (params["tool"] as? JsonObject)?.str("title") ?: existing.currentToolTitle
-        val toolSummary = (params["tool"] as? JsonObject)?.str("summary") ?: existing.currentToolSummary
-        val goal = (params["steps"] as? JsonObject)?.str("goal")
-        val status = when (kind) {
-            "started" -> "running"
-            "finished" -> "idle"
-            "quota" -> "quota"
-            "stalled" -> existing.status
-            else -> existing.status
-        }
-        val steps = (params["steps"] as? JsonObject)?.get("steps") as? kotlinx.serialization.json.JsonArray
-        val newSteps = steps?.mapNotNull { st ->
-            (st as? JsonObject)?.let { TaskStep(it.str("text") ?: "", it.str("status") ?: "todo") }
-        }
-        state.value = state.value.copy(
-            activities = current.map {
-                if (it.id == id) it.copy(
-                    title = title,
-                    status = status,
-                    currentToolTitle = toolTitle,
-                    currentToolSummary = toolSummary,
-                    taskGoal = goal ?: it.taskGoal,
-                    taskSteps = newSteps ?: it.taskSteps,
-                ) else it
-            }
-        )
+        state.value = state.value.copy(activities = mergeActivity(current, params) ?: return)
     }
 
     private suspend fun refreshActivities() {
@@ -680,6 +641,12 @@ class FridayClient(
                 })
             }
         }
+    }
+
+    /** 停掉一个子 Agent（agent.stop；后台的不跟着停止键停，要单独停） */
+    suspend fun stopAgent(agentID: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        rpc.request("agent.stop", buildJsonObject { put("agentID", agentID) })
     }
 
     /** 切到另一条分支（parentKey 空串 = 根消息那一层） */
