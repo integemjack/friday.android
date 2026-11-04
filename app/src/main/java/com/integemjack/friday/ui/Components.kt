@@ -84,14 +84,7 @@ fun PageHeader(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (onOpenDrawer != null) {
-                IconButton(onClick = onOpenDrawer, modifier = Modifier.size(40.dp)) {
-                    Icon(
-                        Icons.Filled.Menu,
-                        contentDescription = "打开侧边栏",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(22.dp),
-                    )
-                }
+                DrawerButton(onClick = onOpenDrawer, modifier = Modifier.size(40.dp))
                 Spacer(Modifier.width(4.dp))
             }
             Text(title, style = MaterialTheme.typography.headlineSmall)

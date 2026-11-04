@@ -32,8 +32,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -43,32 +42,28 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Queue
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -94,10 +89,16 @@ import com.integemjack.friday.proto.blockTool
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-/** 会话窗口：消息流（text / thinking / 工具卡片 / 媒体）+ 附件 + 排队 + 发送 / 停止 */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+/**
+ * 会话页：和助手页一样是**顶级页面**——左上角是侧栏入口（不是返回箭头），手指往右滑拉出侧栏，
+ * 在侧栏里点别的会话直接换过去。
+ *
+ * 这里只画顶栏 + 消息流；底部输入框是 [ChatComposer]，由 [HomeScaffold] 放进 dock，
+ * 跟助手页用的是同一个 [Composer]。
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ChatScreen(onBack: () -> Unit) {
+fun ChatScreen() {
     val model = LocalAppModel.current
     val context = LocalContext.current
     val state by model.client.stateFlow.collectAsState()
@@ -105,61 +106,14 @@ fun ChatScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
-    var input by remember { mutableStateOf("") }
-    val attachments = remember { androidx.compose.runtime.mutableStateListOf<PendingAttachment>() }
     var menuMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    val openDrawer = LocalOpenDrawer.current
 
     val tree = remember(chat) { chat?.tree }
     val messages = tree?.path ?: emptyList()
     val branches = tree?.branches ?: emptyMap()
     val runtime = chat?.runtime
     val workingDirectory = chat?.workingDirectory
-
-    // 上传前拷到本地的副本（发完就删）
-    val localCopies = remember { mutableStateMapOf<String, java.io.File>() }
-
-    fun updateAttachment(id: String, transform: (PendingAttachment) -> PendingAttachment) {
-        val index = attachments.indexOfFirst { it.id == id }
-        if (index >= 0) attachments[index] = transform(attachments[index])
-    }
-
-    fun addAttachments(uris: List<Uri>) {
-        if (uris.isEmpty()) return
-        val fresh = uris.map { uri ->
-            PendingAttachment(
-                id = UUID.randomUUID().toString(),
-                name = displayName(context, uri),
-                size = displaySize(context, uri),
-            ) to uri
-        }
-        attachments.addAll(fresh.map { it.first })
-        fresh.forEach { (item, uri) ->
-            scope.launch {
-                val local = copyToUploadCache(context, uri, item.name)
-                if (local == null) {
-                    updateAttachment(item.id) { it.copy(error = "读不了这个文件") }
-                    return@launch
-                }
-                localCopies[item.id] = local
-                runCatching {
-                    model.client.uploadFile(local) { fraction ->
-                        updateAttachment(item.id) { it.copy(progress = fraction) }
-                    }
-                }.onSuccess { path ->
-                    updateAttachment(item.id) { it.copy(progress = 1f, serverPath = path) }
-                }.onFailure { error ->
-                    updateAttachment(item.id) { it.copy(error = error.message ?: "上传失败") }
-                }
-            }
-        }
-    }
-
-    val mediaPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(9)
-    ) { uris -> addAttachments(uris) }
-    val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri -> uri?.let { addAttachments(listOf(it)) } }
 
     // 流式更新时自动滚到底（用户自己往上翻了就不抢他的滚动条）
     val lastSignature = messages.lastOrNull()?.let { "${it.id}:${it.blocks.size}" } ?: ""
@@ -178,187 +132,21 @@ fun ChatScreen(onBack: () -> Unit) {
         }
     }
 
-    val uploading = attachments.any { !it.done && it.error == null }
-    val readyPaths = attachments.filter { it.done }.mapNotNull { it.serverPath }
-    val canSend = (input.isNotBlank() || readyPaths.isNotEmpty()) && !uploading
-
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                ),
-                title = {
-                    Column {
-                        Text(
-                            chat?.title?.ifBlank { "（无标题）" } ?: "会话",
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (runtime?.generating == true) {
-                                Dot(MaterialTheme.colorScheme.primary, 6.dp)
-                                Spacer(Modifier.width(5.dp))
-                                Text(
-                                    "生成中…",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            } else {
-                                val place = workingDirectory?.trimEnd('/')?.substringAfterLast('/')
-                                Text(
-                                    place?.takeIf { it.isNotBlank() } ?: "已连上",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                )
-                            }
-                        }
-                    }
+            val generating = runtime?.generating == true
+            val place = workingDirectory?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            HomeTopBar(
+                title = chat?.title?.ifBlank { "（无标题）" } ?: "会话",
+                subtitle = when {
+                    chat == null -> "没有打开的会话"
+                    generating -> "生成中…"
+                    else -> place ?: "已连上"
                 },
-                navigationIcon = {
-                    IconButton(onClick = {
-                        model.client.closeConversation()
-                        onBack()
-                    }) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
+                subtitleColor = if (generating) MaterialTheme.colorScheme.primary else null,
+                dotColor = if (generating) MaterialTheme.colorScheme.primary else null,
             )
-        },
-        bottomBar = {
-            // 输入栏贴在屏幕最底部：没键盘时要让出系统导航条（不然输入框被压在导航条下面、点不到），
-            // 键盘弹起时取键盘高度。safeDrawing 的底部就是 max(导航条, 键盘)，两者不会叠着算。
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-            ) {
-                runtime?.let { rt -> QueueBar(rt) }
-                if (runtime?.canRetry == true && runtime?.generating != true) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 3.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.8f))
-                            .padding(start = 12.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Filled.ErrorOutline,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "上一轮没成",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                        )
-                        FilledTonalButton(
-                            onClick = { model.client.retry() },
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                            colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
-                                containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
-                                contentColor = MaterialTheme.colorScheme.error,
-                            ),
-                        ) {
-                            Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("重试")
-                        }
-                    }
-                }
-                AttachmentChips(
-                    attachments.toList(),
-                    onRemove = { id ->
-                        attachments.removeAll { it.id == id }
-                        localCopies.remove(id)?.delete()
-                    },
-                )
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(start = 6.dp, end = 10.dp, top = 6.dp, bottom = 10.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    AttachmentButton(
-                        enabled = chat != null,
-                        onPickMedia = {
-                            mediaPicker.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                            )
-                        },
-                        onPickFile = { filePicker.launch(arrayOf("*/*")) },
-                    )
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(24.dp)),
-                        placeholder = {
-                            Text(
-                                if (uploading) "附件上传中…" else "发消息…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        },
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        shape = RoundedCornerShape(24.dp),
-                        maxLines = 4,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                        ),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    if (runtime?.generating == true) {
-                        FilledIconButton(
-                            onClick = { model.client.stop() },
-                            modifier = Modifier.size(44.dp),
-                            colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer,
-                                contentColor = MaterialTheme.colorScheme.error,
-                            ),
-                        ) {
-                            Icon(Icons.Filled.Stop, contentDescription = "停止", modifier = Modifier.size(20.dp))
-                        }
-                    } else {
-                        FilledIconButton(
-                            enabled = canSend,
-                            onClick = {
-                                val text = input.trim()
-                                if (text.isEmpty() && readyPaths.isEmpty()) return@FilledIconButton
-                                input = ""
-                                attachments.clear()
-                                localCopies.values.forEach { it.delete() }
-                                localCopies.clear()
-                                scope.launch { runCatching { model.client.submit(text, readyPaths) } }
-                            },
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            if (uploading) {
-                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送", modifier = Modifier.size(20.dp))
-                            }
-                        }
-                    }
-                }
-            }
         },
         floatingActionButton = {
             if (chat != null && messages.isNotEmpty() && !atBottom) {
@@ -371,8 +159,21 @@ fun ChatScreen(onBack: () -> Unit) {
         },
     ) { padding ->
         if (chat == null) {
+            // 会话被删了 / 进程被系统回收后回来：给一句话和侧栏入口，不留一页白
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("会话已关闭")
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    EmptyState(
+                        icon = Icons.AutoMirrored.Filled.Chat,
+                        title = "没有打开的会话",
+                        hint = "从侧栏里挑一段会话，或者在那儿新建一段。",
+                    )
+                    if (openDrawer != null) {
+                        FilledTonalButton(onClick = openDrawer) { Text("打开侧栏") }
+                    }
+                }
             }
             return@Scaffold
         }
@@ -410,6 +211,182 @@ fun ChatScreen(onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+// MARK: 输入框
+
+/**
+ * 一段会话里打了一半的话 + 选了还没发的附件。按会话分开存（[ChatDrafts]）：
+ * 在侧栏里换到别的会话再回来，打了一半的话还在；也不会把这段的草稿带到那段去。
+ */
+@Stable
+class ChatDraft {
+    var input by mutableStateOf("")
+    val attachments = mutableStateListOf<PendingAttachment>()
+    /** 上传前拷到本地的副本（发完、移除时删掉） */
+    val localCopies = mutableMapOf<String, java.io.File>()
+
+    fun update(id: String, transform: (PendingAttachment) -> PendingAttachment) {
+        val index = attachments.indexOfFirst { it.id == id }
+        if (index >= 0) attachments[index] = transform(attachments[index])
+    }
+
+    fun remove(id: String) {
+        attachments.removeAll { it.id == id }
+        localCopies.remove(id)?.delete()
+    }
+
+    fun clear() {
+        input = ""
+        attachments.clear()
+        localCopies.values.forEach { it.delete() }
+        localCopies.clear()
+    }
+}
+
+/** 所有会话的草稿（AppRoot 拿着，切页不丢） */
+@Stable
+class ChatDrafts {
+    private val drafts = mutableMapOf<String, ChatDraft>()
+    fun of(conversationId: String): ChatDraft = drafts.getOrPut(conversationId) { ChatDraft() }
+}
+
+/**
+ * 会话页的输入框：[Composer] + 附件按钮，上面挂排队、重试、附件三样。
+ *
+ * 跟助手页同一套规则：生成中且输入框空着，右边是「停止」；打了字就是「发送」（远程那边排队，
+ * 上面的排队条会把它列出来）。
+ */
+@Composable
+fun ChatComposer(drafts: ChatDrafts) {
+    val model = LocalAppModel.current
+    val context = LocalContext.current
+    val state by model.client.stateFlow.collectAsState()
+    val chat = state.chat
+    val runtime = chat?.runtime
+    val scope = rememberCoroutineScope()
+    val draft = drafts.of(chat?.id ?: "")
+    var sendError by remember { mutableStateOf<String?>(null) }
+
+    fun addAttachments(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        // 拷贝和上传都按这一刻的草稿记：中途换了会话，进度还是落回原来那段
+        val target = draft
+        val fresh = uris.map { uri ->
+            PendingAttachment(
+                id = UUID.randomUUID().toString(),
+                name = displayName(context, uri),
+                size = displaySize(context, uri),
+            ) to uri
+        }
+        target.attachments.addAll(fresh.map { it.first })
+        fresh.forEach { (item, uri) ->
+            scope.launch {
+                val local = copyToUploadCache(context, uri, item.name)
+                if (local == null) {
+                    target.update(item.id) { it.copy(error = "读不了这个文件") }
+                    return@launch
+                }
+                target.localCopies[item.id] = local
+                runCatching {
+                    model.client.uploadFile(local) { fraction ->
+                        target.update(item.id) { it.copy(progress = fraction) }
+                    }
+                }.onSuccess { path ->
+                    target.update(item.id) { it.copy(progress = 1f, serverPath = path) }
+                }.onFailure { error ->
+                    target.update(item.id) { it.copy(error = error.message ?: "上传失败") }
+                }
+            }
+        }
+    }
+
+    val mediaPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(9)
+    ) { uris -> addAttachments(uris) }
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { addAttachments(listOf(it)) } }
+
+    val uploading = draft.attachments.any { !it.done && it.error == null }
+    val readyPaths = draft.attachments.filter { it.done }.mapNotNull { it.serverPath }
+    val generating = runtime?.generating == true
+    val empty = draft.input.isBlank() && readyPaths.isEmpty()
+
+    Composer(
+        value = draft.input,
+        onValueChange = { draft.input = it },
+        placeholder = when {
+            chat == null -> "先在侧栏里选一段会话"
+            uploading -> "附件上传中…"
+            generating -> "接着说会排队（空着点右边是停止）"
+            else -> "发消息…"
+        },
+        enabled = chat != null,
+        canSend = !empty && !uploading,
+        busy = uploading && !generating,
+        onStop = if (generating && empty) ({ model.client.stop() }) else null,
+        stopDescription = "停止",
+        onSend = {
+            val text = draft.input.trim()
+            if (text.isNotEmpty() || readyPaths.isNotEmpty()) {
+                val target = draft
+                target.clear()
+                scope.launch {
+                    runCatching { model.client.submit(text, readyPaths) }
+                        .onFailure {
+                            // 没送出去：把话放回去（附件已经在远程了，路径丢了也只能重选）
+                            if (target.input.isEmpty()) target.input = text
+                            sendError = it.message ?: "发送失败"
+                        }
+                }
+            }
+        },
+        leading = {
+            AttachmentButton(
+                enabled = chat != null,
+                onPickMedia = {
+                    mediaPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                    )
+                },
+                onPickFile = { filePicker.launch(arrayOf("*/*")) },
+            )
+        },
+        above = {
+            runtime?.let { rt -> QueueBar(rt) }
+            if (runtime?.canRetry == true && !generating) {
+                ComposerNotice(
+                    icon = Icons.Filled.ErrorOutline,
+                    text = "上一轮没成",
+                    tint = MaterialTheme.colorScheme.error,
+                    trailing = {
+                        TextButton(
+                            onClick = { model.client.retry() },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("重试")
+                        }
+                    },
+                )
+            }
+            AttachmentChips(draft.attachments.toList(), onRemove = { id -> draft.remove(id) })
+        },
+    )
+
+    sendError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { sendError = null },
+            title = { Text("没送出去") },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = { sendError = null }) { Text("知道了") } },
+        )
     }
 }
 
@@ -460,8 +437,7 @@ private fun QueueBar(runtime: Runtime) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.34f))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),

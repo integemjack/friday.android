@@ -19,26 +19,21 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -53,24 +48,33 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.integemjack.friday.proto.ConnState
 import com.integemjack.friday.proto.ConversationSummary
 import kotlinx.coroutines.launch
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * 会话列表：现在整段嵌在侧栏里（没有单独的会话页），所以它不再有任何页头。
- * 点一条 → 订那段会话并进聊天，同时把侧栏收起来。
+ * 会话列表：整段嵌在侧栏里（没有单独的会话页），所以它**不画任何页头、也没有悬浮按钮**——
+ * 「会话」标题、计数和「新建」都在侧栏那条头部里。
+ *
+ * 按置顶 / 今天 / 昨天 / 更早分组；[selectedId] 那条（会话页正开着的）整行高亮。
+ * 点一条 → 先收侧栏，再 [onOpen]（AppRoot 去订那段会话、切到会话页）；长按置顶 / 重命名 / 删除。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun SessionsScreen(onOpen: () -> Unit) {
-    val openDrawer = LocalOpenDrawer.current
+fun SessionsScreen(
+    onOpen: (String) -> Unit,
+    selectedId: String? = null,
+    onGoSettings: () -> Unit = {},
+) {
     val closeDrawer = LocalCloseDrawer.current
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
@@ -83,130 +87,84 @@ fun SessionsScreen(onOpen: () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         when (val conn = state.conn) {
             is ConnState.Connected -> {
+                val groups = remember(state.summaries) { groupSummaries(state.summaries) }
                 LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 6.dp, bottom = 84.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     if (state.summaries.isEmpty()) {
                         item {
-                            EmptyState(
+                            DrawerHint(
                                 icon = Icons.AutoMirrored.Filled.Chat,
                                 title = "还没有会话",
-                                hint = "点右下角「新会话」开一段，或去活动页看远程在跑的活。",
-                                modifier = Modifier.padding(top = 48.dp),
+                                hint = "点上面的「新建」开一段，或者跟助手说一声让它开。",
                             )
                         }
                     }
-                    items(state.summaries, key = { it.id }) { s ->
-                        Box {
-                            SummaryRow(
-                                s,
-                                generating = state.runner?.isGenerating(s.id) == true,
-                                onClick = {
-                                    if (com.integemjack.friday.Demo.active) {
-                                        // 演示数据里没有真的 RPC：直接进聊天看排版
+                    groups.forEach { (label, list) ->
+                        item(key = "group-$label") { GroupLabel(label) }
+                        items(list, key = { it.id }) { s ->
+                            Box {
+                                SummaryRow(
+                                    s,
+                                    selected = s.id == selectedId,
+                                    generating = state.runner?.isGenerating(s.id) == true,
+                                    onClick = {
                                         closeDrawer?.invoke()
-                                        onOpen()
-                                    } else {
+                                        onOpen(s.id)
+                                    },
+                                    onLongPress = { menuSummary = s },
+                                )
+                                SummaryMenu(
+                                    summary = menuSummary,
+                                    anchor = s.id,
+                                    onDismiss = { menuSummary = null },
+                                    onRename = { renaming = it },
+                                    onDelete = { deleting = it },
+                                    onTogglePin = { summary ->
                                         scope.launch {
-                                            runCatching { model.client.subscribeConversation(s.id) }
-                                                .onSuccess {
-                                                    closeDrawer?.invoke()
-                                                    onOpen()
-                                                }
+                                            runCatching { model.client.setPinned(summary.id, !summary.pinned) }
                                                 .onFailure { newError = it.message }
                                         }
-                                    }
-                                },
-                                onLongPress = { menuSummary = s },
-                            )
-                            SummaryMenu(
-                                summary = menuSummary,
-                                anchor = s.id,
-                                onDismiss = { menuSummary = null },
-                                onRename = { renaming = it },
-                                onDelete = { deleting = it },
-                                onTogglePin = { summary ->
-                                    scope.launch {
-                                        runCatching { model.client.setPinned(summary.id, !summary.pinned) }
-                                            .onFailure { newError = it.message }
-                                    }
-                                },
-                            )
+                                    },
+                                )
+                            }
                         }
                     }
                 }
-                // 会话页进去就是列表：顶上只留一条紧凑栏（汉堡 + 会话数 + 连接状态），
-                // 不再用大标题把屏幕顶部一大块占掉。
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(52.dp)
-                        .background(MaterialTheme.colorScheme.background.copy(alpha = 0.96f)),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    openDrawer?.let {
-                        IconButton(onClick = it, modifier = Modifier.size(44.dp)) {
-                            Icon(
-                                Icons.Filled.Menu,
-                                contentDescription = "打开侧边栏",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                    }
-                    Text("会话", style = MaterialTheme.typography.titleMedium)
-                    if (state.summaries.isNotEmpty()) {
-                        Spacer(Modifier.width(8.dp))
-                        Chip(
-                            "${state.summaries.size}",
-                            color = MaterialTheme.colorScheme.primary,
-                            container = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Dot(MaterialTheme.colorScheme.tertiary, size = 6.dp)
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        conn.server.displayName.ifBlank { conn.server.hostname },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .widthIn(max = 150.dp)
-                            .padding(end = 14.dp),
-                    )
-                }
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        scope.launch {
-                            runCatching { model.client.newConversation() }
-                                .onSuccess { onOpen() }
-                                .onFailure { newError = it.message }
-                        }
-                    },
-                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                    text = { Text("新会话") },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(20.dp),
+            }
+            is ConnState.Connecting -> Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    conn.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            is ConnState.Disconnected -> ConnectHint(onOpenDrawer = openDrawer)
-            is ConnState.Connecting -> Column(
-                Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
-                Spacer(Modifier.height(14.dp))
-                Text(conn.message, style = MaterialTheme.typography.bodyMedium)
-            }
-            is ConnState.Failed -> ConnectHint(conn.message, openDrawer)
+            is ConnState.Disconnected -> DrawerHint(
+                icon = Icons.Filled.WifiOff,
+                title = "还没有连接远程机器",
+                hint = "到设置里登 SChat 账号、选那台远程 Friday，连上后这里列出它的全部会话。",
+                action = "去设置",
+                onAction = onGoSettings,
+            )
+            is ConnState.Failed -> DrawerHint(
+                icon = Icons.Filled.WifiOff,
+                title = "连接失败",
+                hint = conn.message,
+                tint = MaterialTheme.colorScheme.error,
+                action = "去设置",
+                onAction = onGoSettings,
+            )
         }
     }
 
@@ -252,7 +210,41 @@ fun SessionsScreen(onOpen: () -> Unit) {
     }
 }
 
-/** 大标题：会话数 + 连的是哪台机器（已交给通用的 PageHeader） */
+/**
+ * 分组：置顶的单独一组，其余按更新时间落到今天 / 昨天 / 更早。
+ * 组内保持服务端给的顺序（服务端已经按时间排好了），只是把它们归到对应的组下面。
+ */
+private fun groupSummaries(all: List<ConversationSummary>): List<Pair<String, List<ConversationSummary>>> {
+    val today = LocalDate.now()
+    val pinned = mutableListOf<ConversationSummary>()
+    val todays = mutableListOf<ConversationSummary>()
+    val yesterdays = mutableListOf<ConversationSummary>()
+    val earlier = mutableListOf<ConversationSummary>()
+    all.forEach { s ->
+        if (s.pinned) {
+            pinned += s
+            return@forEach
+        }
+        val day = runCatching { Instant.parse(s.updatedAt).atZone(ZoneId.systemDefault()).toLocalDate() }.getOrNull()
+        when (day) {
+            today -> todays += s
+            today.minusDays(1) -> yesterdays += s
+            else -> earlier += s
+        }
+    }
+    return listOf("置顶" to pinned, "今天" to todays, "昨天" to yesterdays, "更早" to earlier)
+        .filter { it.second.isNotEmpty() }
+}
+
+@Composable
+private fun GroupLabel(label: String) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        modifier = Modifier.padding(start = 10.dp, top = 10.dp, bottom = 3.dp),
+    )
+}
 
 /** 长按会话弹出的菜单（挂在对应那一行的 Box 里） */
 @Composable
@@ -313,59 +305,75 @@ private fun RenameDialog(initial: String, onDismiss: () -> Unit, onConfirm: (Str
     )
 }
 
+/** 侧栏里的提示卡：没连上 / 连接失败 / 还没有会话。比整页的空状态紧凑，不占满侧栏 */
 @Composable
-private fun ConnectHint(error: String? = null, onOpenDrawer: (() -> Unit)? = null) {
-    Box(Modifier.fillMaxSize()) {
-        // 没连上时也要能拉出抽屉去设置
-        if (onOpenDrawer != null) {
-            IconButton(onClick = onOpenDrawer, modifier = Modifier.padding(start = 4.dp, top = 2.dp)) {
-                Icon(Icons.Filled.Menu, contentDescription = "打开侧边栏", modifier = Modifier.size(22.dp))
-            }
+private fun DrawerHint(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    hint: String?,
+    tint: Color = MaterialTheme.colorScheme.primary,
+    action: String? = null,
+    onAction: () -> Unit = {},
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.7f))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconBadge(icon, tint = tint, size = 30.dp)
+            Spacer(Modifier.width(10.dp))
+            Text(title, style = MaterialTheme.typography.titleSmall)
         }
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            EmptyState(
-                icon = Icons.Filled.WifiOff,
-                title = if (error != null) "连接失败" else "还没有连接远程机器",
-                hint = error
-                    ?: "到「设置」里登 SChat 账号、选那台远程 Friday（走 WebRTC 连），连上后这里显示它的全部会话。",
-                tint = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+        if (hint != null) {
+            Text(
+                hint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        if (action != null) {
+            FilledTonalButton(
+                onClick = onAction,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+            ) { Text(action) }
         }
     }
 }
 
+/**
+ * 侧栏里的一条会话：字母牌 + 标题 + 「时间 · 目录」，右边在跑转圈 / 草稿标签。
+ * 不再是一张张白卡片（侧栏只有 3/4 宽，卡片堆起来很重），平时透明，按下 / 选中才有底色。
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SummaryRow(
     s: ConversationSummary,
+    selected: Boolean,
     generating: Boolean,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
 ) {
     val title = s.title.ifBlank { "（无标题）" }
     val scheme = MaterialTheme.colorScheme
-    // 按下去轻微收缩 + 底色更深一档：长列表里手指点下去要有反应，
-    // 不然点完不知道点没点到（打开会话要等远程回应）
+    // 按下去轻微收缩 + 底色深一档：点下去要有反应（打开会话要等远程回应）
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.985f else 1f, tween(120), label = "rowScale")
+    val scale by animateFloatAsState(if (pressed) 0.98f else 1f, tween(120), label = "rowScale")
     Row(
         Modifier
             .fillMaxWidth()
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(
                 when {
-                    pressed -> scheme.surfaceContainerHigh
-                    // 置顶的会话底色略偏主色，跟下面的分开
-                    s.pinned -> scheme.primaryContainer.copy(alpha = 0.32f)
-                    else -> scheme.surfaceContainerLow
+                    selected -> scheme.primaryContainer.copy(alpha = 0.75f)
+                    pressed -> scheme.surfaceContainerHighest.copy(alpha = 0.8f)
+                    else -> Color.Transparent
                 }
             )
             .combinedClickable(
@@ -374,66 +382,50 @@ private fun SummaryRow(
                 onClick = onClick,
                 onLongClick = onLongPress,
             )
-            .padding(horizontal = 12.dp, vertical = 12.dp),
+            .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 置顶：左侧一根竖条，一眼看出上面几条是钉住的
-        if (s.pinned) {
-            Box(
-                Modifier
-                    .width(3.dp)
-                    .height(30.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(scheme.primary.copy(alpha = 0.55f))
-            )
-            Spacer(Modifier.width(8.dp))
-        }
-        MonogramBadge(title)
-        Spacer(Modifier.width(12.dp))
+        MonogramBadge(title, size = 34.dp)
+        Spacer(Modifier.width(11.dp))
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (s.pinned) {
-                    Spacer(Modifier.width(6.dp))
-                    Icon(
-                        Icons.Filled.PushPin,
-                        contentDescription = "置顶",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(13.dp),
-                    )
-                }
-            }
-            Spacer(Modifier.height(3.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = if (selected) scheme.onPrimaryContainer else scheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     formatTime(s.updatedAt),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = scheme.onSurfaceVariant,
                 )
                 s.workingDirectoryName?.let { dir ->
-                    Spacer(Modifier.width(7.dp))
+                    Spacer(Modifier.width(6.dp))
                     SepDot()
-                    Spacer(Modifier.width(7.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(
                         dir,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = scheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
         }
-        Spacer(Modifier.width(8.dp))
         when {
-            generating -> CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-            s.hasDraft -> Chip("草稿", color = MaterialTheme.colorScheme.tertiary)
+            generating -> {
+                Spacer(Modifier.width(8.dp))
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            }
+            s.hasDraft -> {
+                Spacer(Modifier.width(8.dp))
+                Chip("草稿", color = scheme.tertiary)
+            }
             else -> Unit
         }
     }
@@ -445,7 +437,7 @@ private val dayFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd
 /** 时间：今天只给几点几分，昨天给「昨天」，更早才带日期（一列全是 11-04 18:23 看不出先后） */
 private fun formatTime(iso: String): String = runCatching {
     val at = Instant.parse(iso).atZone(ZoneId.systemDefault())
-    val today = java.time.LocalDate.now()
+    val today = LocalDate.now()
     when (at.toLocalDate()) {
         today -> timeFormatter.format(at)
         today.minusDays(1) -> "昨天 " + timeFormatter.format(at)

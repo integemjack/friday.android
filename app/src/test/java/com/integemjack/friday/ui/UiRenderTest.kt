@@ -5,6 +5,13 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.performTextInput
+import com.integemjack.friday.proto.AssistantState
+import com.integemjack.friday.proto.RunnerState
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
@@ -61,6 +68,17 @@ class UiRenderTest {
                 CompositionLocalProvider(LocalAppModel provides model) { content() }
             }
         }
+    }
+
+    /** 会话页按真的样子摆：主外壳 + 会话页（顶级页面）+ 底部共用的输入框 */
+    private fun renderChat(model: AppModel) = render(model) {
+        val drafts = remember { ChatDrafts() }
+        HomeScaffold(
+            tab = HomeTabs.CHAT,
+            onTab = {},
+            dock = { ChatComposer(drafts) },
+            sessions = { SessionsScreen(onOpen = {}) },
+        ) { ChatScreen() }
     }
 
     /** 这个文本不该在界面上 */
@@ -191,7 +209,7 @@ class UiRenderTest {
                 ),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
 
         compose.onNodeWithText("帮我看这张图").assertExists()
         compose.onNodeWithText("这是一只猫").assertExists()
@@ -212,7 +230,7 @@ class UiRenderTest {
                 chat = chatState(listOf(message("1", "assistant", listOf(textBlock("b1", "复制我"))))),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
 
         compose.onNodeWithText("复制我").performTouchInput { longClick() }
         compose.onNodeWithText("复制文本").assertIsDisplayed()
@@ -234,7 +252,7 @@ class UiRenderTest {
                 ),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
         compose.onNodeWithContentDescription("停止").assertIsDisplayed()
         assertNoDescription("发送")
     }
@@ -248,7 +266,7 @@ class UiRenderTest {
                 chat = chatState(listOf(message("1", "user", listOf(textBlock("b1", "hi"))))),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
         compose.onNodeWithContentDescription("发送").assertIsDisplayed()
         assertNoDescription("停止")
     }
@@ -272,7 +290,7 @@ class UiRenderTest {
                 ),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
 
         compose.onNodeWithText("排队已暂停（2）").assertExists()
         compose.onNodeWithText("第一条排队的").assertExists()
@@ -294,7 +312,7 @@ class UiRenderTest {
                 ),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
 
         compose.onNodeWithText("重试").assertIsDisplayed()
     }
@@ -316,7 +334,7 @@ class UiRenderTest {
                 ),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
 
         compose.onNodeWithText("43 tok/s · 1234 tokens · 智谱 GLM").assertExists()
     }
@@ -332,7 +350,7 @@ class UiRenderTest {
                 ),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
 
         // 没连上远程（rpc 为空）→ 媒体加载失败，界面上给文件名 + 一句原因
         compose.waitUntil(10_000) {
@@ -356,7 +374,7 @@ class UiRenderTest {
                 ),
             )
         )
-        render(model) { ChatScreen(onBack = {}) }
+        renderChat(model)
 
         compose.onNodeWithText("第一种回答").assertExists()
         compose.onNodeWithText("1/2").assertExists()
@@ -468,5 +486,101 @@ class UiRenderTest {
     fun `没连上时活动页给提示而不是空白`() {
         render(modelWith(FridayState())) { ActivityScreen() }
         compose.onNodeWithText("连接远程机器后，这里显示所有会话的实时动静和待确认的调用。").assertIsDisplayed()
+    }
+
+    // MARK: 顶级页面 + 共用输入框 + 侧栏
+
+    @Test
+    fun `会话页是顶级页面：左上角是侧栏入口，不是返回箭头`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(listOf(message("1", "user", listOf(textBlock("b1", "hi"))))),
+            )
+        )
+        renderChat(model)
+        compose.onNodeWithText("测试会话").assertIsDisplayed()
+        compose.onNodeWithContentDescription("打开侧边栏").assertIsDisplayed()
+        assertNoDescription("返回")
+    }
+
+    @Test
+    fun `会话页生成中打了字也能发（排队），空着才是停止`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(
+                    listOf(message("1", "user", listOf(textBlock("b1", "hi")))),
+                    runtime = runtime(generating = true),
+                ),
+            )
+        )
+        renderChat(model)
+        compose.onNodeWithContentDescription("停止").assertIsDisplayed()
+        compose.onNodeWithText("接着说会排队（空着点右边是停止）").performTextInput("再补一句")
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed()
+        assertNoDescription("停止")
+    }
+
+    @Test
+    fun `助手页用同一个输入框：在说话时空着是打断，打了字是发送`() {
+        val assistant = AssistantState.fromJson(
+            buildJsonObject {
+                put("enabled", true)
+                put("reacting", true)
+                put("config", buildJsonObject { put("name", "小F") })
+            }
+        )
+        val model = modelWith(FridayState(conn = connected, assistant = assistant))
+        render(model) {
+            var input by remember { mutableStateOf("") }
+            AssistantComposer(input = input, onInput = { input = it })
+        }
+        compose.onNodeWithContentDescription("打断").assertIsDisplayed()
+        compose.onNodeWithText("想插一句？（空着点右边是打断）").performTextInput("#a1b2 先停一下")
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed()
+        compose.onNodeWithText("这条直接发给 #a1b2，不经过助手").assertIsDisplayed()
+    }
+
+    @Test
+    fun `侧栏：会话标题只有一个，新建在标题旁边，按置顶和日期分组`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                runner = RunnerState(
+                    generating = emptyList(), stopping = emptyList(),
+                    pendingApproval = listOf("C2"), pendingQuestion = listOf("C2"),
+                ),
+                summaries = listOf(
+                    ConversationSummary(
+                        id = "C1", title = "钉住的那段", updatedAt = "2026-01-02T00:00:00Z",
+                        pinned = true, isEmpty = false, hasDraft = false,
+                    ),
+                    ConversationSummary(
+                        id = "C2", title = "老早的那段", updatedAt = "2026-01-01T00:00:00Z",
+                        pinned = false, isEmpty = false, hasDraft = true, workingDirectoryName = "proj",
+                    ),
+                ),
+            )
+        )
+        render(model) {
+            HomeScaffold(
+                tab = HomeTabs.ASSISTANT,
+                onTab = {},
+                sessions = { SessionsScreen(onOpen = {}, selectedId = "C1") },
+            ) {}
+        }
+        // 旧版在侧栏里又压了一条会话页头：标题出现两遍、「新会话」悬浮按钮盖住列表
+        assertEquals(1, compose.onAllNodesWithText("会话").fetchSemanticsNodes().size)
+        compose.onNodeWithText("新建").assertExists()
+        assertNoText("新会话")
+        compose.onNodeWithText("置顶").assertExists()
+        compose.onNodeWithText("更早").assertExists()
+        compose.onNodeWithText("钉住的那段").assertExists()
+        compose.onNodeWithText("草稿").assertExists()
+        // 同一段会话又要批准又在提问，只算一段
+        compose.onNodeWithText("1 待确认").assertExists()
     }
 }

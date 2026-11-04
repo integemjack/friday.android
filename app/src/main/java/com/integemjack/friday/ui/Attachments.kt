@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,9 +15,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
@@ -36,6 +38,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import java.io.File
 
@@ -107,13 +111,29 @@ fun formatBytes(bytes: Long): String = when {
     else -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
 }
 
-/** 附件按钮：点开选相册还是选文件 */
+/**
+ * 附件按钮：点开选相册还是选文件。放在 [Composer] 胶囊的最左边，所以是一颗 38dp 的圆（＋），
+ * 不用 IconButton（它会把自己撑到 48dp，胶囊被顶高）。
+ */
 @Composable
 fun AttachmentButton(enabled: Boolean, onPickMedia: () -> Unit, onPickFile: () -> Unit) {
     var expanded by remember { mutableStateOf(false) }
+    val scheme = MaterialTheme.colorScheme
     Box {
-        IconButton(onClick = { expanded = true }, enabled = enabled) {
-            Icon(Icons.Filled.AttachFile, contentDescription = "添加附件")
+        Box(
+            Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(if (enabled) scheme.surfaceContainerHigh else Color.Transparent)
+                .clickable(enabled = enabled, role = Role.Button) { expanded = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Add,
+                contentDescription = "添加附件",
+                tint = if (enabled) scheme.onSurfaceVariant else scheme.onSurfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.size(20.dp),
+            )
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
@@ -130,22 +150,20 @@ fun AttachmentButton(enabled: Boolean, onPickMedia: () -> Unit, onPickFile: () -
     }
 }
 
-/** 待传附件的一排小卡片（带进度、错误、删除） */
+/** 待传附件的一排小卡片（带进度、错误、删除）。挂在 [Composer] 上面，左右留白由它给 */
 @Composable
 fun AttachmentChips(items: List<PendingAttachment>, onRemove: (String) -> Unit) {
     if (items.isEmpty()) return
     Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+        Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         items.forEach { item ->
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {

@@ -18,16 +18,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.activity.compose.BackHandler
 import com.integemjack.friday.ui.ActivityScreen
-import com.integemjack.friday.ui.AssistantInputBar
+import com.integemjack.friday.ui.AssistantComposer
 import com.integemjack.friday.ui.AssistantScreen
+import com.integemjack.friday.ui.ChatComposer
+import com.integemjack.friday.ui.ChatDrafts
 import com.integemjack.friday.ui.ChatScreen
 import com.integemjack.friday.ui.HomeScaffold
+import com.integemjack.friday.ui.HomeTabs
 import com.integemjack.friday.ui.LocalAppModel
 import com.integemjack.friday.ui.SettingsScreen
 import com.integemjack.friday.ui.SessionsScreen
 import com.integemjack.friday.ui.theme.FridayTheme
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -80,6 +86,7 @@ class MainActivity : ComponentActivity() {
         const val TAB_ASSISTANT = 0
         const val TAB_ACTIVITY = 1
         const val TAB_SETTINGS = 2
+        const val TAB_CHAT = 3
         /** 导航条全透明（不是默认的 90% 白 scrim） */
         private const val TRANSPARENT_SCRIM = 0x00000000
     }
@@ -88,62 +95,95 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
     val model = LocalAppModel.current
+    // 只盯「开着哪段会话」：整份 state 每个流式字都会变，收它会让整个外壳跟着重组
+    val openConversationId by remember(model) {
+        model.client.stateFlow.map { it.openConversationId }.distinctUntilChanged()
+    }.collectAsState(initial = null)
     val scope = androidx.compose.runtime.rememberCoroutineScope()
-    // 主页面就是助手页：开 App 进来先看它在忙什么
-    var tab by rememberSaveable { mutableIntStateOf(MainActivity.TAB_ASSISTANT) }
-    var showChat by rememberSaveable { mutableStateOf(Demo.startInChat) }
-    var chatError by remember { mutableStateOf<String?>(null) }
-    // 助手页 dock 里打了一半的话：提到这一层，切到别的页再回来不丢
+    // 主页面就是助手页：开 App 进来先看它在忙什么。会话页跟它平级（HomeTabs.CHAT）
+    var tab by rememberSaveable {
+        mutableIntStateOf(if (Demo.startInChat) HomeTabs.CHAT else MainActivity.TAB_ASSISTANT)
+    }
+    var openError by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // 两个输入框里打了一半的话都提到这一层：切到别的页再回来不丢。会话的按会话分开存
     var assistantInput by rememberSaveable { mutableStateOf("") }
+    val chatDrafts = remember { ChatDrafts() }
     val requested by tabRequest.collectAsState()
-    // 通知点进来：跳到那一页（从聊天里出来，回到主框架）
+
+    // 切页：离开会话页就退订那段会话（事件量不小，没人看就别收）
+    fun go(target: Int) {
+        if (tab == HomeTabs.CHAT && target != HomeTabs.CHAT) model.client.closeConversation()
+        tab = target
+    }
+    // 通知点进来：跳到那一页
     androidx.compose.runtime.LaunchedEffect(requested) {
         requested?.let {
-            tab = it
-            showChat = false
+            go(it)
             tabRequest.value = null
         }
     }
-    // 助手页的回执卡上点「打开」、以及侧栏里点会话：订那段会话再进去
+    // 助手页的回执卡上点「打开」、侧栏里点会话：订那段会话，切到会话页
     fun openConversation(id: String) {
         // 演示数据里没有真的 RPC（点进去只会报未连接），直接就进去看
         if (Demo.active) {
-            showChat = true
+            tab = HomeTabs.CHAT
             return
         }
+        // 已经开着的就是这段：不用再订一遍
+        if (tab == HomeTabs.CHAT && model.client.state.value.chat?.id == id) return
         scope.launch {
             runCatching { model.client.subscribeConversation(id) }
-                .onSuccess { showChat = true }
-                .onFailure { chatError = it.message }
+                .onSuccess { tab = HomeTabs.CHAT }
+                .onFailure { openError = "那段会话打不开" to (it.message ?: "") }
         }
     }
-    if (showChat) {
-        ChatScreen(onBack = { showChat = false })
-    } else {
-        // 助手页：输入框坐它自己的底栏（HomeScaffold 里），没有底部导航栏
-        val dock: (@Composable () -> Unit)? =
-            if (tab == MainActivity.TAB_ASSISTANT) {
-                { AssistantInputBar(input = assistantInput, onInput = { assistantInput = it }) }
-            } else {
-                null
-            }
-        HomeScaffold(
-            tab = tab,
-            onTab = { tab = it },
-            dock = dock,
-            assistant = { AssistantScreen(onOpenSession = ::openConversation) },
-            sessions = { SessionsScreen(onOpen = { showChat = true }) },
-            activity = { ActivityScreen(onOpen = { showChat = true }) },
-            settings = { SettingsScreen() },
-        )
+    fun newConversation() {
+        scope.launch {
+            runCatching { model.client.newConversation() }
+                .onSuccess { tab = HomeTabs.CHAT }
+                .onFailure { openError = "新会话没开起来" to (it.message ?: "") }
+        }
     }
-    chatError?.let { message ->
+    // 返回键：别的页先回助手页（主页面），在助手页上才退出 App。侧栏开着时 HomeScaffold 先收侧栏
+    BackHandler(enabled = tab != HomeTabs.ASSISTANT) { go(HomeTabs.ASSISTANT) }
+
+    // 底部输入框：助手页和会话页是同一个 Composer，只是发给谁不同；活动 / 设置没有输入框
+    val dock: (@Composable () -> Unit)? = when (tab) {
+        HomeTabs.ASSISTANT -> {
+            { AssistantComposer(input = assistantInput, onInput = { assistantInput = it }) }
+        }
+        HomeTabs.CHAT -> {
+            { ChatComposer(chatDrafts) }
+        }
+        else -> null
+    }
+    HomeScaffold(
+        tab = tab,
+        onTab = ::go,
+        dock = dock,
+        sessions = {
+            SessionsScreen(
+                onOpen = ::openConversation,
+                selectedId = if (tab == HomeTabs.CHAT) openConversationId else null,
+                onGoSettings = { go(HomeTabs.SETTINGS) },
+            )
+        },
+        onNewConversation = ::newConversation,
+    ) {
+        when (tab) {
+            HomeTabs.ASSISTANT -> AssistantScreen(onOpenSession = ::openConversation)
+            HomeTabs.CHAT -> ChatScreen()
+            HomeTabs.ACTIVITY -> ActivityScreen(onOpen = { tab = HomeTabs.CHAT })
+            else -> SettingsScreen()
+        }
+    }
+    openError?.let { (title, message) ->
         androidx.compose.material3.AlertDialog(
-            onDismissRequest = { chatError = null },
-            title = { androidx.compose.material3.Text("那段会话打不开") },
+            onDismissRequest = { openError = null },
+            title = { androidx.compose.material3.Text(title) },
             text = { androidx.compose.material3.Text(message) },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { chatError = null }) {
+                androidx.compose.material3.TextButton(onClick = { openError = null }) {
                     androidx.compose.material3.Text("知道了")
                 }
             },

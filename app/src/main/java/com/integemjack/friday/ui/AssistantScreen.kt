@@ -26,39 +26,30 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HourglassEmpty
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SelfImprovement
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -98,8 +89,6 @@ import kotlinx.coroutines.launch
 fun AssistantScreen(
     onOpenSession: (String) -> Unit = {},
 ) {
-    // 侧栏入口：从外壳的 CompositionLocal 里拿
-    val openDrawer = LocalOpenDrawer.current
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
     val scope = rememberCoroutineScope()
@@ -150,44 +139,22 @@ fun AssistantScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                ),
-                navigationIcon = {
-                    // 主页面就是这一页，不靠底部导航：侧栏入口放在左上角
-                    if (openDrawer != null) {
-                        IconButton(onClick = openDrawer) {
-                            Icon(
-                                Icons.Filled.Menu,
-                                contentDescription = "打开侧边栏",
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                    }
+            // 和会话页同一条顶栏（左上角侧栏入口、标题 + 一行状态），两页切来切去不跳
+            val where = state.conn as? com.integemjack.friday.proto.ConnState.Connected
+            HomeTopBar(
+                title = assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手",
+                subtitle = when {
+                    !state.connected -> "没连上远程机器"
+                    assistant?.enabled == true ->
+                        (where?.server?.hostname ?: "") +
+                            (assistant.brainEngineTitle?.let { " · $it" } ?: "")
+                    else -> (where?.server?.hostname ?: "") + " · 还没打开"
                 },
-                title = {
-                    Column {
-                        Text(
-                            assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手",
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        val where = state.conn as? com.integemjack.friday.proto.ConnState.Connected
-                        Text(
-                            when {
-                                !state.connected -> "没连上远程机器"
-                                assistant?.enabled == true ->
-                                    (where?.server?.hostname ?: "") +
-                                        (assistant.brainEngineTitle?.let { " · $it" } ?: "")
-                                else -> (where?.server?.hostname ?: "") + " · 还没打开"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    }
+                subtitleColor = if (assistant?.speaking == true) MaterialTheme.colorScheme.primary else null,
+                dotColor = when {
+                    assistant?.speaking == true -> MaterialTheme.colorScheme.primary
+                    assistant?.enabled == true -> LocalFridayExtra.current.success
+                    else -> null
                 },
                 actions = {
                     if (state.connected) {
@@ -641,19 +608,19 @@ private fun receiptVisual(text: String, status: String, level: String): Pair<Ima
     }
 }
 
-// MARK: dock 上半截：跟助手说话
+// MARK: 输入框：跟助手说话
 
 /**
- * 助手页底部 dock 的输入框那一行。由 [HomeScaffold] 放进 dock（和 tab 行同一个容器、
- * 同一条顶边、一起让位导航条和键盘），所以这里不画背景、也不自己算 inset。
+ * 助手页的输入框：跟会话页是**同一个** [Composer]（同样的胶囊、同样的发送 / 停止按钮），
+ * 由 [HomeScaffold] 放进 dock，所以这里不画背景、也不自己算 inset。
  *
- * 输入框的文字状态由调用方（AppRoot）拿着：切到别的 tab 再回来，打了一半的话还在。
+ * 助手在出字、输入框又空着时，右边是「打断」；打了字就是「发送」（插一句）。
+ * 输入框的文字状态由调用方（AppRoot）拿着：切到别的页再回来，打了一半的话还在。
  */
 @Composable
-fun AssistantInputBar(
+fun AssistantComposer(
     input: String,
     onInput: (String) -> Unit,
-    modifier: Modifier = Modifier,
 ) {
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
@@ -662,94 +629,40 @@ fun AssistantInputBar(
     val speaking = state.assistant?.speaking == true
     val direct = directTarget(input)
 
-    Column(modifier.fillMaxWidth()) {
+    Composer(
+        value = input,
+        onValueChange = onInput,
+        placeholder = when {
+            !state.connected -> "连上远程机器才能跟助手说话"
+            speaking -> "想插一句？（空着点右边是打断）"
+            else -> "跟助手说点什么…"
+        },
+        enabled = state.connected,
+        onStop = if (speaking && input.isBlank()) ({ model.client.stopAssistant() }) else null,
+        stopDescription = "打断",
+        onSend = {
+            val text = input.trim()
+            if (text.isNotEmpty()) {
+                onInput("")
+                scope.launch {
+                    runCatching { model.client.sayToAssistant(text) }
+                        .onFailure { sayError = it.message }
+                }
+            }
+        },
         // 「#短号 …」= 这条不经大脑、原样转给那段会话，先说清楚再发
-        if (direct != null) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 12.dp, end = 12.dp, top = 7.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f))
-                    .padding(horizontal = 9.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Filled.Bolt,
-                    contentDescription = null,
+        above = if (direct != null) {
+            {
+                ComposerNotice(
+                    icon = Icons.Filled.Bolt,
+                    text = "这条直接发给 #$direct，不经过助手",
                     tint = MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.size(13.dp),
-                )
-                Spacer(Modifier.width(5.dp))
-                Text(
-                    "这条直接发给 #$direct，不经过助手",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.tertiary,
                 )
             }
-        }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInput,
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(22.dp)),
-                placeholder = {
-                    Text(
-                        if (speaking) "想插一句？（空着点右边是打断）" else "跟助手说点什么…",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                },
-                textStyle = MaterialTheme.typography.bodyMedium,
-                shape = RoundedCornerShape(22.dp),
-                maxLines = 4,
-                enabled = state.connected,
-                colors = OutlinedTextFieldDefaults.colors(
-                    // 比 dock 亮一档，看着是「嵌在这块底栏里」而不是浮在上面
-                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
-                ),
-            )
-            Spacer(Modifier.width(6.dp))
-            if (speaking && input.isBlank()) {
-                FilledIconButton(
-                    onClick = { model.client.stopAssistant() },
-                    modifier = Modifier.size(44.dp),
-                    colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.error,
-                    ),
-                ) {
-                    Icon(Icons.Filled.Stop, contentDescription = "打断", modifier = Modifier.size(20.dp))
-                }
-            } else {
-                FilledIconButton(
-                    enabled = state.connected && input.isNotBlank(),
-                    onClick = {
-                        val text = input.trim()
-                        onInput("")
-                        scope.launch {
-                            runCatching { model.client.sayToAssistant(text) }
-                                .onFailure { sayError = it.message }
-                        }
-                    },
-                    modifier = Modifier.size(44.dp),
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送", modifier = Modifier.size(20.dp))
-                }
-            }
-        }
-    }
+        } else {
+            null
+        },
+    )
 
     if (sayError != null) {
         AlertDialog(
