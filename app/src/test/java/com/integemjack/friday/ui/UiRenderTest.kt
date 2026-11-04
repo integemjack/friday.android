@@ -449,6 +449,27 @@ class UiRenderTest {
     }
 
     @Test
+    fun `智能体的回复不包气泡，字直接从列表左边开始`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(
+                    listOf(
+                        message("1", "user", listOf(textBlock("b1", "问一句"))),
+                        message("2", "assistant", listOf(textBlock("b2", "答一句")), parent = "1"),
+                    )
+                ),
+            )
+        )
+        renderChat(model)
+
+        // 列表左右只留 12dp；包在气泡里时字还要再往里缩一圈
+        val answer = compose.onNodeWithText("答一句", useUnmergedTree = true).getBoundsInRoot()
+        assertTrue("智能体的回复左边 ${answer.left} 还缩在气泡里", answer.left <= 13.dp)
+    }
+
+    @Test
     fun `图片拉不到时说清原因，不崩`() {
         val model = modelWith(
             FridayState(

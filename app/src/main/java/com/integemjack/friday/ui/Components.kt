@@ -24,6 +24,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -218,6 +220,18 @@ fun MonospaceBlock(text: String, modifier: Modifier = Modifier, maxLines: Int = 
         )
     }
 }
+
+/**
+ * 消息流里「图标 + 名字」那种一行（思考、工具）的图标占宽：下面的小字、展开的内容都从这儿开始，跟名字对齐
+ */
+val LineIndent = 20.dp
+
+/** 左边一道细竖线（展开的思考、工具详情）：不用整块底色也看得出这段归上面那一行 */
+fun Modifier.leftRule(color: Color): Modifier = this
+    .drawBehind {
+        drawRect(color, size = Size(2.dp.toPx(), size.height))
+    }
+    .padding(start = 10.dp)
 
 /** 空状态：大图标 + 一句标题 + 一句怎么办 */
 @Composable

@@ -90,7 +90,8 @@ import kotlinx.coroutines.launch
 /**
  * 助手页（同桌面版 AssistantView.qml，docs/ASSISTANT.md §1.1）：
  * 样子和对话页一样——时间线按天分隔、从下往上排、跟着底部，往上翻按页加载；
- * 用户的话在右边气泡（标来源）、助手的回复在左边、工具卡片、回执行带「打开」和「批准 / 拒绝」；
+ * 用户的话在右边小气泡（标来源）；助手的回复、回执、工具都不包卡片，一行行铺满（一屏多看几条），
+ * 回执整行点进那段会话、要批准的给「批准 / 拒绝」；
  * 底部输入框对助手说话，它在出字时按钮是「打断」。关着时是一页说明 +「打开助手」。
  */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
@@ -203,14 +204,14 @@ fun AssistantScreen(
                     // 倒排以后会跑到最底下）；离线时换成一条「显示的是哪会儿的」
                     if (state.connected) {
                         BoardStrip(
-                            Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp),
+                            Modifier.padding(horizontal = 12.dp),
                             running = state.assistantBoard?.running ?: 0,
                             awaiting = state.assistantBoard?.awaiting ?: 0,
                             channels = state.assistantChannels,
                         )
                     } else {
                         OfflineStrip(
-                            Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp),
+                            Modifier.padding(horizontal = 12.dp),
                             connecting = state.conn is com.integemjack.friday.proto.ConnState.Connecting,
                             cachedAt = state.cachedAt,
                         )
@@ -221,8 +222,8 @@ fun AssistantScreen(
                         modifier = Modifier.fillMaxSize().fadeTopEdge(),
                         reverseLayout = true,
                         contentPadding = PaddingValues(
-                            start = 16.dp,
-                            end = 16.dp,
+                            start = 12.dp,
+                            end = 12.dp,
                             top = TopFadeHeight,
                             bottom = 8.dp + LocalDockPadding.current,
                         ),
@@ -298,59 +299,68 @@ private fun EntryRow(
     }
 }
 
-/** 用户的话：右边气泡，标来源（语音 / 哪个渠道） */
+/** 用户的话：右边一个小气泡，下面一行小字标来源（语音 / 哪个渠道） */
 @Composable
 private fun UserRow(entry: JournalEntry) {
     Column(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().padding(start = 48.dp),
         horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         Text(
             entry.text,
             Modifier
                 .clip(RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp))
                 .background(MaterialTheme.colorScheme.primaryContainer)
-                .padding(horizontal = 13.dp, vertical = 9.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
         )
-        entry.source?.let { Row(verticalAlignment = Alignment.CenterVertically) { SourceChip(it) } }
+        entry.source?.let {
+            Text(
+                sourceLabel(it),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(end = 4.dp),
+            )
+        }
     }
 }
 
-/** 助手的回复：左边一张浅卡，流式时带尾巴，被打断 / 出错标出来 */
+/**
+ * 助手的回复：不包卡片、不要「助手」那行抬头，字直接铺满整行（同会话页的智能体回复），
+ * 下面一行小字是时间和「在说…」/「被打断」
+ */
 @Composable
 private fun AssistantRow(entry: JournalEntry) {
-    FridayCard {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (entry.text.isNotBlank()) Text(entry.text, style = MaterialTheme.typography.bodyMedium)
+        entry.error?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconBadge(Icons.Filled.SelfImprovement, size = 22.dp)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "助手",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            if (entry.streaming) {
-                Text("在说…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-            } else if (entry.interrupted) {
-                Chip("被打断", color = MaterialTheme.colorScheme.tertiary)
-            }
             Text(
                 clockOf(entry.at),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
-        }
-        Text(entry.text, style = MaterialTheme.typography.bodyMedium)
-        entry.error?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            val status = when {
+                entry.streaming -> "在说…" to MaterialTheme.colorScheme.primary
+                entry.interrupted -> "被打断" to MaterialTheme.colorScheme.tertiary
+                else -> null
+            }
+            status?.let { (text, color) ->
+                Spacer(Modifier.width(6.dp))
+                Text(text, style = MaterialTheme.typography.labelSmall, color = color)
+            }
         }
     }
 }
 
-/** 回执行：左边状态图标，中间那段的动静，右边「打开」和批准 / 拒绝 */
+/**
+ * 回执（某段会话的动静）：小图标 + 那段的动静 + 时间，不包卡片；能打开的整行点进去（右边一个 ›）。
+ * 要你批准的才垫一层淡底、下面给「拒绝 / 批准」
+ */
 @Composable
 private fun ReceiptRow(
     entry: JournalEntry,
@@ -359,20 +369,32 @@ private fun ReceiptRow(
 ) {
     val info = entry.receipt
     val (icon, tint) = receiptVisual(entry.text, info?.status.orEmpty(), info?.level.orEmpty())
-    FridayCard(
-        color = if (info?.needsDecision == true) {
-            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.07f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
-        },
+    val needsDecision = info?.needsDecision == true
+    val conversation = info?.conversationID
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .then(
+                if (needsDecision) Modifier.background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f))
+                else Modifier
+            )
+            .then(
+                if (conversation != null) Modifier.clickable(onClickLabel = "打开这段会话") { onOpenSession(conversation) }
+                else Modifier
+            )
+            .padding(horizontal = if (needsDecision) 10.dp else 0.dp, vertical = if (needsDecision) 8.dp else 2.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconBadge(icon, tint = tint, size = 26.dp)
-            Spacer(Modifier.width(9.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            Box(Modifier.width(LineIndent).padding(top = 4.dp)) {
+                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+            }
+            Column(Modifier.weight(1f)) {
                 Text(
                     entry.text.ifBlank { info?.event ?: "动静" },
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -380,67 +402,79 @@ private fun ReceiptRow(
                     Text(
                         it,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
+                        color = muted,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
+            Spacer(Modifier.width(8.dp))
             Text(
                 clockOf(entry.at),
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                color = muted.copy(alpha = 0.7f),
+                modifier = Modifier.padding(top = 4.dp),
             )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (info?.conversationID != null) {
-                TextButton(onClick = { onOpenSession(info.conversationID) }) {
-                    Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("打开")
-                }
+            if (conversation != null) {
+                Icon(
+                    Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = muted.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(top = 2.dp).size(18.dp),
+                )
             }
-            if (info?.needsDecision == true) {
+        }
+        if (needsDecision) {
+            val machineID = info?.machineID ?: "local"
+            val eventID = info?.approvalEventID.orEmpty()
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
                 OutlinedButton(
-                    onClick = { onDecide(info.machineID ?: "local", info.approvalEventID!!, false) },
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    onClick = { onDecide(machineID, eventID, false) },
+                    modifier = Modifier.height(34.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp),
                 ) { Text("拒绝") }
                 FilledTonalButton(
-                    onClick = { onDecide(info.machineID ?: "local", info.approvalEventID!!, true) },
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                    onClick = { onDecide(machineID, eventID, true) },
+                    modifier = Modifier.height(34.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
                 ) { Text("批准") }
             }
         }
     }
 }
 
-/** 工具那一条：默认只一行，点开看参数和结果 */
+/** 工具那一条：默认只一行（› + 名字 + 时间，不包卡片），点开看参数和结果 */
 @Composable
 private fun ToolRow(entry: JournalEntry) {
     var expanded by remember(entry.id) { mutableStateOf(false) }
     val tool = entry.tool
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.7f))
+            .clip(RoundedCornerShape(6.dp))
             .clickable { expanded = !expanded }
-            .padding(horizontal = 12.dp, vertical = 9.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                Icons.Filled.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .size(16.dp)
-                    .graphicsLayer { if (expanded) rotationZ = 90f },
-            )
-            Spacer(Modifier.width(6.dp))
+            Box(Modifier.width(LineIndent)) {
+                Icon(
+                    Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = muted,
+                    modifier = Modifier
+                        .size(16.dp)
+                        .graphicsLayer { if (expanded) rotationZ = 90f },
+                )
+            }
             Text(
                 tool?.name?.takeIf { it.isNotBlank() } ?: entry.text,
                 style = MaterialTheme.typography.labelLarge,
+                color = muted,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -448,17 +482,25 @@ private fun ToolRow(entry: JournalEntry) {
             Text(
                 clockOf(entry.at),
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                color = muted.copy(alpha = 0.7f),
             )
         }
         if (expanded) {
-            tool?.arguments?.takeIf { it.isNotBlank() }?.let {
-                Text("参数", style = MaterialTheme.typography.labelSmall)
-                MonospaceBlock(it.take(2000), maxLines = 12)
-            }
-            tool?.result?.takeIf { it.isNotBlank() }?.let {
-                Text("结果", style = MaterialTheme.typography.labelSmall)
-                MonospaceBlock(it.take(2000), maxLines = 12)
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp)
+                    .leftRule(MaterialTheme.colorScheme.outlineVariant),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                tool?.arguments?.takeIf { it.isNotBlank() }?.let {
+                    Text("参数", style = MaterialTheme.typography.labelSmall, color = muted)
+                    MonospaceBlock(it.take(2000), maxLines = 12)
+                }
+                tool?.result?.takeIf { it.isNotBlank() }?.let {
+                    Text("结果", style = MaterialTheme.typography.labelSmall, color = muted)
+                    MonospaceBlock(it.take(2000), maxLines = 12)
+                }
             }
         }
     }
@@ -502,9 +544,7 @@ private fun BoardStrip(
     Row(
         modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.6f))
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+            .padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -529,9 +569,7 @@ private fun OfflineStrip(modifier: Modifier = Modifier, connecting: Boolean, cac
     Row(
         modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f))
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+            .padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (connecting) {
@@ -558,15 +596,12 @@ private fun StatChip(leading: @Composable () -> Unit, text: String) {
     }
 }
 
-@Composable
-private fun SourceChip(source: String) {
-    val label = when {
-        source == "voice" -> "语音"
-        source == "desktop" -> "桌面"
-        source.startsWith("schat") || source.contains("bot") -> "SChat"
-        else -> source
-    }
-    Chip(label, color = MaterialTheme.colorScheme.tertiary)
+/** 用户那句话是从哪儿来的 */
+private fun sourceLabel(source: String): String = when {
+    source == "voice" -> "语音"
+    source == "desktop" -> "桌面"
+    source.startsWith("schat") || source.contains("bot") -> "SChat"
+    else -> source
 }
 
 @Composable

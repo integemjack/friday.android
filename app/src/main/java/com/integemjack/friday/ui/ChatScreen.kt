@@ -6,6 +6,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -176,9 +177,10 @@ fun ChatScreen() {
                 state = listState,
                 modifier = Modifier.fillMaxSize().fadeTopEdge(),
                 reverseLayout = true,
+                // 左右只留 12dp：智能体的回复不包气泡、铺满整行，一行多放几个字
                 contentPadding = PaddingValues(
-                    start = 16.dp,
-                    end = 16.dp,
+                    start = 12.dp,
+                    end = 12.dp,
                     top = TopFadeHeight,
                     bottom = 12.dp + LocalDockPadding.current,
                 ),
@@ -190,7 +192,7 @@ fun ChatScreen() {
                 }
                 items(timeline, key = { it.id }) { message ->
                     Box {
-                        MessageBubble(
+                        MessageItem(
                             message = message,
                             workingDirectory = workingDirectory,
                             branch = branches[message.id],
@@ -531,9 +533,13 @@ private fun QueuedRow(item: QueuedInput) {
     }
 }
 
+/**
+ * 一条消息。你说的话是右边一个小气泡；智能体的回复**不包气泡**，直接铺满整行（同桌面端），
+ * 字、思考、工具一条条往下排，一屏能多看几行。长按整条弹菜单（复制 / 重试）
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(
+private fun MessageItem(
     message: ChatMessage,
     workingDirectory: String?,
     branch: BranchInfo?,
@@ -541,105 +547,92 @@ private fun MessageBubble(
     onLongPress: () -> Unit,
 ) {
     val fromUser = message.role == "user"
-    val extra = com.integemjack.friday.ui.theme.LocalFridayExtra.current
+    val scheme = MaterialTheme.colorScheme
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(start = if (fromUser) 56.dp else 0.dp, end = if (fromUser) 0.dp else 0.dp),
+            .padding(start = if (fromUser) 48.dp else 0.dp),
         horizontalAlignment = if (fromUser) Alignment.End else Alignment.Start,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (branch != null && branch.count > 1) {
-                BranchSwitcher(branch, onSwitchBranch)
-                Spacer(Modifier.width(6.dp))
-            }
-            message.fromAgent?.let {
-                Chip("子 Agent · $it", color = MaterialTheme.colorScheme.tertiary)
-            }
-            message.sentBy?.let {
-                Chip("来自 $it", color = MaterialTheme.colorScheme.tertiary)
-            }
-            // 智能体工作时补充进去的：做完当时那一步就交给了它（同桌面端 MessageItem「· 工作中补充」）
-            if (message.interjected) {
-                Chip("工作中补充", color = MaterialTheme.colorScheme.primary)
+        val hasBranches = branch != null && branch.count > 1
+        if (hasBranches || message.fromAgent != null || message.sentBy != null || message.interjected) {
+            Row(
+                Modifier.padding(bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (hasBranches) BranchSwitcher(branch!!, onSwitchBranch)
+                message.fromAgent?.let { Chip("子 Agent · $it", color = scheme.tertiary) }
+                message.sentBy?.let { Chip("来自 $it", color = scheme.tertiary) }
+                // 智能体工作时补充进去的：做完当时那一步就交给了它（同桌面端 MessageItem「· 工作中补充」）
+                if (message.interjected) Chip("工作中补充", color = scheme.primary)
             }
         }
-        if (branch != null && branch.count > 1) Spacer(Modifier.height(4.dp))
-        Column(
-            Modifier
-                .clip(
-                    RoundedCornerShape(
-                        topStart = 20.dp,
-                        topEnd = 20.dp,
-                        bottomEnd = if (fromUser) 6.dp else 20.dp,
-                        bottomStart = if (fromUser) 20.dp else 6.dp,
-                    )
-                )
-                .background(
-                    if (fromUser) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceContainerLow
-                )
-                .combinedClickable(
-                    onClick = {},
-                    onLongClick = onLongPress,
-                )
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            message.blocks.forEach { block -> BlockView(block, workingDirectory) }
-            if (message.blocks.none { b -> blockText(b) != null || blockTool(b) != null || blockMedia(b) != null }) {
-                Text("（无内容）", style = MaterialTheme.typography.bodySmall)
-            }
+        if (fromUser) {
+            Column(
+                Modifier
+                    .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomEnd = 6.dp, bottomStart = 18.dp))
+                    .background(scheme.primaryContainer)
+                    .combinedClickable(onClick = {}, onLongClick = onLongPress)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) { MessageBlocks(message, workingDirectory) }
+        } else {
+            // 没有气泡也就没有按下去的那块底色：长按不画水波纹，弹出菜单就是反馈
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {},
+                        onLongClick = onLongPress,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) { MessageBlocks(message, workingDirectory) }
         }
         if (message.error != null) {
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     Icons.Filled.ErrorOutline,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
+                    tint = scheme.error,
                     modifier = Modifier.size(14.dp),
                 )
                 Spacer(Modifier.width(5.dp))
-                Text(
-                    message.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                Text(message.error, style = MaterialTheme.typography.bodySmall, color = scheme.error)
             }
         }
-        if (message.stoppedByUser) {
+        // 「已停止」和用量并成一行小字
+        val stats = message.stats?.takeIf { it.tokenCount > 0 }
+        if (message.stoppedByUser || stats != null) {
             Text(
-                "已停止",
+                listOfNotNull(
+                    "已停止".takeIf { message.stoppedByUser },
+                    stats?.let { s ->
+                        buildString {
+                            append("${kotlin.math.round(s.tokensPerSecond).toInt()} tok/s · ${s.tokenCount} tokens")
+                            s.engineName?.let { append(" · $it") }
+                        }
+                    },
+                ).joinToString(" · "),
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 3.dp),
+                color = scheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.padding(top = 4.dp),
             )
         }
-        message.stats?.let { stats ->
-            if (stats.tokenCount > 0) {
-                Row(
-                    Modifier.padding(top = 5.dp, start = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Filled.CheckCircle,
-                        contentDescription = null,
-                        tint = extra.success.copy(alpha = 0.8f),
-                        modifier = Modifier.size(12.dp),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        buildString {
-                            append("${kotlin.math.round(stats.tokensPerSecond).toInt()} tok/s · ${stats.tokenCount} tokens")
-                            stats.engineName?.let { append(" · $it") }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
+    }
+}
+
+@Composable
+private fun MessageBlocks(message: ChatMessage, workingDirectory: String?) {
+    message.blocks.forEach { block -> BlockView(block, workingDirectory) }
+    if (message.blocks.none { b -> blockText(b) != null || blockTool(b) != null || blockMedia(b) != null }) {
+        Text(
+            "（无内容）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -693,7 +686,7 @@ private fun BranchSwitcher(branch: BranchInfo, onSwitchBranch: (child: String, p
 fun BlockView(block: MessageBlock, workingDirectory: String? = null) {
     val text = blockText(block)
     if (text != null) {
-        Text(text, style = MaterialTheme.typography.bodyLarge)
+        Text(text, style = MaterialTheme.typography.bodyMedium)
         return
     }
     val thinking = blockThinking(block)
@@ -713,54 +706,63 @@ fun BlockView(block: MessageBlock, workingDirectory: String? = null) {
     }
 }
 
+/** 思考：默认只一行「思考 …」（没有底色），点开在下面露出内容，左边一道竖线 */
 @Composable
 private fun ThinkingBlock(content: String) {
     var expanded by remember { mutableStateOf(false) }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f))
-            .clickable { expanded = !expanded }
-            .animateContentSize()
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(Modifier.fillMaxWidth().animateContentSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Icon(
                 Icons.Filled.Psychology,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = muted.copy(alpha = 0.8f),
                 modifier = Modifier.size(14.dp),
             )
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(LineIndent - 14.dp))
             Text(
                 if (expanded) "思考 ▾" else "思考 …",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = muted,
             )
         }
         if (expanded && content.isNotBlank()) {
             Text(
                 content,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = muted,
+                modifier = Modifier
+                    .padding(start = 6.dp, top = 4.dp)
+                    .leftRule(MaterialTheme.colorScheme.outlineVariant),
             )
         }
     }
 }
 
+/**
+ * 工具：默认一行（状态图标 + 名字；没成 / 等确认才在右边写一个字样），下面一行结果的第一行。
+ * 不包卡片，跟正文靠颜色分开；点一下展开参数、结果和子 Agent 的运行记录
+ */
 @Composable
 fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
     var expanded by remember { mutableStateOf(false) }
     val extra = com.integemjack.friday.ui.theme.LocalFridayExtra.current
+    val scheme = MaterialTheme.colorScheme
+    // 成功的不写「完成」：绿勾就够了；在跑的转圈。只有要你注意的才多一个字样
     val (tint, label) = when (tool.status) {
-        "awaitingApproval" -> MaterialTheme.colorScheme.tertiary to "待确认"
-        "running" -> MaterialTheme.colorScheme.primary to "运行中"
-        "succeeded" -> extra.success to "完成"
-        "failed" -> MaterialTheme.colorScheme.error to "失败"
-        "denied" -> MaterialTheme.colorScheme.onSurfaceVariant to "已拒绝"
-        else -> MaterialTheme.colorScheme.outline to tool.status
+        "awaitingApproval" -> scheme.tertiary to "待确认"
+        "running" -> scheme.primary to null
+        "succeeded" -> extra.success to null
+        "failed" -> scheme.error to "失败"
+        "denied" -> scheme.onSurfaceVariant to "已拒绝"
+        else -> scheme.outline to tool.status.ifBlank { null }
     }
     val icon = when (tool.status) {
         "succeeded" -> Icons.Filled.CheckCircle
@@ -768,57 +770,71 @@ fun ToolCard(tool: ToolEvent, workingDirectory: String? = null) {
         "awaitingApproval" -> Icons.Filled.Queue
         else -> Icons.Filled.Terminal
     }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f))
-            .clickable { expanded = !expanded }
-            .animateContentSize()
-            .padding(horizontal = 10.dp, vertical = 9.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(7.dp))
-            Text(
-                tool.title?.ifBlank { tool.name } ?: tool.name,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (tool.status == "running") {
-                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(6.dp))
-            }
-            Chip(label, color = tint)
-        }
-        // 看图 / 看视频 / 听录音：媒体直接内嵌在卡片里（不用点开）
-        ToolMedia(tool, workingDirectory)
-        if (!expanded) {
-            val brief = tool.result.lineSequence().firstOrNull { it.isNotBlank() }
-            if (!brief.isNullOrBlank()) {
+    Column(Modifier.fillMaxWidth().animateContentSize()) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 2.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(LineIndent)) {
+                    if (tool.status == "running") {
+                        CircularProgressIndicator(Modifier.padding(1.dp).size(12.dp), strokeWidth = 1.5.dp)
+                    } else {
+                        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+                    }
+                }
                 Text(
-                    brief,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    tool.title?.ifBlank { tool.name } ?: tool.name,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = scheme.onSurfaceVariant,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                if (label != null) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(label, style = MaterialTheme.typography.labelSmall, color = tint)
+                }
             }
-        } else {
-            if (!tool.preview.isNullOrBlank()) {
-                Text(tool.preview!!, style = MaterialTheme.typography.bodySmall)
+            if (!expanded) {
+                val brief = tool.result.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+                if (!brief.isNullOrBlank()) {
+                    Text(
+                        brief,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = LineIndent),
+                    )
+                }
             }
-            if (tool.arguments.isNotBlank() && tool.arguments != "{}") {
-                MonospaceBlock(tool.arguments.take(2000))
+        }
+        // 看图 / 看视频 / 听录音：媒体直接内嵌（不用点开）
+        ToolMedia(tool, workingDirectory)
+        if (expanded) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp, top = 4.dp)
+                    .leftRule(scheme.outlineVariant),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (!tool.preview.isNullOrBlank()) {
+                    Text(tool.preview!!, style = MaterialTheme.typography.bodySmall)
+                }
+                if (tool.arguments.isNotBlank() && tool.arguments != "{}") {
+                    MonospaceBlock(tool.arguments.take(2000))
+                }
+                if (tool.result.isNotBlank()) {
+                    MonospaceBlock(tool.result.take(4000))
+                }
+                // 子 Agent 运行记录（递归一层）
+                tool.transcript.forEach { BlockView(it, workingDirectory) }
             }
-            if (tool.result.isNotBlank()) {
-                MonospaceBlock(tool.result.take(4000))
-            }
-            // 子 Agent 运行记录（递归一层）
-            tool.transcript.forEach { BlockView(it, workingDirectory) }
         }
     }
 }
