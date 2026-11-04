@@ -28,10 +28,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -73,6 +75,8 @@ fun BotPickerScreen(onPicked: () -> Unit, onBack: (() -> Unit)? = null) {
     // 聊天服务器一连上就拉一次好友列表
     LaunchedEffect(schat.phase) { if (schat.phase == SchatService.Phase.Online) refresh() }
 
+    // 这页不在 Surface 里：没写颜色的字/图标默认是纯黑，深色模式下就看不见了。这里给一个默认前景色
+    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
     Column(
         Modifier
             .fillMaxSize()
@@ -157,6 +161,7 @@ fun BotPickerScreen(onPicked: () -> Unit, onBack: (() -> Unit)? = null) {
                     .padding(bottom = 12.dp),
             ) { Text("换个账号（退出登录）") }
         }
+    }
     }
 }
 
