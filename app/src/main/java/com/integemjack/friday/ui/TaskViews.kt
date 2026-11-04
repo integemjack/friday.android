@@ -4,9 +4,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,22 +22,13 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,10 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.integemjack.friday.proto.TaskSnapshot
 import com.integemjack.friday.proto.TaskStep
-import com.integemjack.friday.proto.TeamRun
 import com.integemjack.friday.ui.theme.LocalFridayExtra
-import kotlinx.coroutines.delay
-import java.time.Instant
 
 // MARK: 任务状态
 
@@ -183,150 +169,5 @@ private fun StepRow(step: TaskStep) {
             style = MaterialTheme.typography.bodySmall,
             color = if (step.status == "done") scheme.onSurfaceVariant else scheme.onSurface,
         )
-    }
-}
-
-// MARK: 后台的子 Agent
-
-/** 这段会话派到后台的子 Agent（主 Agent 这一轮说完了它们还在跑） */
-fun backgroundRuns(team: List<TeamRun>, conversationID: String?): List<TeamRun> =
-    if (conversationID == null) emptyList()
-    else team.filter { it.conversationID == conversationID && (it.background || it.detached) }
-
-/** 「在执行「执行命令」 · 第 5 步 · 已运行 3 分 2 秒」：按字段和现在的时间算，每秒刷新 */
-fun runStatusLine(run: TeamRun, nowMillis: Long): String {
-    val doing = when {
-        run.stopRequested -> "正在停下"
-        !run.running -> "已结束"
-        run.activityKind == "tool" -> "在执行「${run.activityTitle?.ifBlank { null } ?: "工具"}」"
-        run.activityKind == "generating" -> "在想"
-        run.activityKind == "waitingChildren" -> "等它派的子 Agent"
-        run.activityKind == "waitingApproval" -> "等你确认"
-        run.activityKind == "queued" -> "排队中"
-        else -> "在跑"
-    }
-    val parts = mutableListOf(doing)
-    if (run.steps > 0) parts += "第 ${run.steps} 步"
-    run.started?.let { started ->
-        runCatching { Instant.parse(started).toEpochMilli() }.getOrNull()?.let { at ->
-            parts += "已运行 " + formatElapsed(((nowMillis - at) / 1000).coerceAtLeast(0))
-        }
-    }
-    return parts.joinToString(" · ")
-}
-
-fun formatElapsed(seconds: Long): String = when {
-    seconds < 60 -> "$seconds 秒"
-    seconds < 3600 -> "${seconds / 60} 分 ${seconds % 60} 秒"
-    else -> "${seconds / 3600} 小时 ${seconds % 3600 / 60} 分"
-}
-
-/** 输入框上面那一行：「转圈 · 2 个子 Agent 在后台 · 在执行「执行命令」」，点开面板 */
-@Composable
-fun BackgroundAgentsBar(runs: List<TeamRun>, onOpen: () -> Unit) {
-    val running = runs.filter { it.running }
-    if (running.isEmpty()) return
-    val scheme = MaterialTheme.colorScheme
-    val latest = running.firstOrNull { it.activityKind == "tool" } ?: running.first()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(scheme.background)
-            .background(scheme.tertiaryContainer.copy(alpha = 0.34f))
-            .clickable(onClick = onOpen)
-            .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.5.dp, color = scheme.tertiary)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "${running.size} 个子 Agent 在后台",
-            style = MaterialTheme.typography.labelMedium,
-            color = scheme.onSurface,
-        )
-        Text(
-            "  " + (if (latest.activityKind == "tool") "在执行「${latest.activityTitle.orEmpty()}」" else latest.name),
-            style = MaterialTheme.typography.labelSmall,
-            color = scheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Icon(Icons.Filled.ChevronRight, contentDescription = "看后台的子 Agent", tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-    }
-}
-
-/** 后台子 Agent 的面板（Modal）。[onDismiss] 收起 */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun BackgroundAgentsSheet(runs: List<TeamRun>, onStop: (String) -> Unit, onDismiss: () -> Unit) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-    ) { BackgroundAgentsContent(runs, onStop) }
-}
-
-/** 面板里的内容（单独拿出来：界面测试里不开 Modal 窗口也能验） */
-@Composable
-fun BackgroundAgentsContent(runs: List<TeamRun>, onStop: (String) -> Unit) {
-    val now by produceState(System.currentTimeMillis()) {
-        while (true) {
-            delay(1000)
-            value = System.currentTimeMillis()
-        }
-    }
-    val scheme = MaterialTheme.colorScheme
-    val running = runs.filter { it.running && !it.stopRequested }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .heightIn(max = 560.dp)
-            .verticalScroll(rememberScrollState())
-            .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text("后台的子 Agent", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "主 Agent 派出去后接着跑的，做完会把结果交回这段会话。停止键不停它们，要停在这里停。",
-            style = MaterialTheme.typography.bodySmall,
-            color = scheme.onSurfaceVariant,
-        )
-        if (runs.isEmpty()) {
-            Text("现在没有", style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
-        }
-        runs.forEachIndexed { index, run ->
-            if (index > 0) HorizontalDivider(color = scheme.outlineVariant.copy(alpha = 0.5f))
-            Row(verticalAlignment = Alignment.Top) {
-                Box(Modifier.padding(top = 2.dp).width(LineIndent)) {
-                    if (run.running && !run.stopRequested) {
-                        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
-                    } else {
-                        Icon(Icons.Filled.SmartToy, contentDescription = null, tint = scheme.outline, modifier = Modifier.size(16.dp))
-                    }
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(run.name.ifBlank { "子 Agent" }, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(runStatusLine(run, now), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
-                    run.lastOutput?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-                if (run.running && !run.stopRequested) {
-                    TextButton(
-                        onClick = { onStop(run.id) },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    ) { Text("停下", color = scheme.error) }
-                }
-            }
-        }
-        if (running.size > 1) {
-            OutlinedButton(
-                onClick = { running.forEach { onStop(it.id) } },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("全部停下（${running.size}）", color = scheme.error) }
-        }
     }
 }

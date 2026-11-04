@@ -19,6 +19,7 @@ import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.longClick
@@ -473,30 +474,98 @@ class UiRenderTest {
             )
         )
         renderChat(model)
-        compose.onNodeWithText("1 个子 Agent 在后台").assertExists()
-        compose.onNodeWithContentDescription("看后台的子 Agent").assertExists()
+        compose.onNodeWithText("后台：1 个子 Agent").assertExists()
+        compose.onNodeWithContentDescription("看后台任务").assertExists()
+    }
+
+    private fun terminal(id: String, running: Boolean, exitCode: Int? = null, conversation: String = "C1") =
+        com.integemjack.friday.proto.TerminalInfo(
+            id = id, conversationID = conversation, title = "t", shell = "pwsh",
+            command = "ctest -R http --output-on-failure", running = running, exitCode = exitCode,
+        )
+
+    private fun loopTask(id: String, conversation: String? = "C1", target: String = "conversation", paused: Boolean = false) =
+        com.integemjack.friday.proto.LoopTask(
+            id = id, number = 3, triggerKind = "weekly", minutes = null, days = 0x1f, minuteOfDay = 17 * 60 + 45, at = null,
+            content = "跑模拟盘并汇报\n第二行", target = target, conversationID = conversation, title = null, createdBy = "agent",
+            nextRun = null, lastRun = null, runStartedAt = null, paused = paused, runCount = 12, lastResult = "B 净值 1.03",
+        )
+
+    @Test
+    fun `终端命令和这段会话的定时任务也挂在后台那一行；别的会话的不算`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                openConversationId = "C1",
+                chat = chatState(listOf(message("1", "user", listOf(textBlock("b1", "跑测试"))))),
+                terminals = listOf(terminal("term1", running = true), terminal("other", running = true, conversation = "C2")),
+                loops = listOf(loopTask("loop1"), loopTask("loop2", conversation = "C2"), loopTask("sys", conversation = null, target = "system")),
+            )
+        )
+        renderChat(model)
+        compose.onNodeWithText("后台：1 个终端在跑、1 个定时任务").assertExists()
     }
 
     @Test
-    fun `后台子 Agent 面板：每个一行写在做什么、第几步，能单独停、能全部停`() {
-        val stopped = mutableListOf<String>()
+    fun `后台任务面板：子 Agent 能停，终端能看输出、能结束，定时任务能马上跑、能暂停`() {
+        val calls = mutableListOf<String>()
+        val tasks = BackgroundTasks(
+            agents = listOf(backgroundRun("r1", "清理执行员"), backgroundRun("r2", "测试员", title = "读取文件")),
+            terminals = listOf(terminal("term1", running = true), terminal("term2", running = false, exitCode = 1)),
+            loops = listOf(loopTask("loop1")),
+        )
         render(modelWith(FridayState(conn = connected))) {
-            BackgroundAgentsContent(
-                listOf(backgroundRun("r1", "清理执行员"), backgroundRun("r2", "测试员", title = "读取文件")),
-                onStop = { stopped += it },
+            BackgroundContent(
+                tasks,
+                BackgroundActions(
+                    stopAgent = { calls += "stop:$it" },
+                    closeTerminal = { calls += "close:$it" },
+                    terminalOutput = { id -> calls += "output:$id"; "PASS 12/12" },
+                    setLoopPaused = { id, paused -> calls += "pause:$id:$paused" },
+                    runLoopNow = { calls += "run:$it" },
+                ),
             )
         }
+        // 子 Agent：在做什么、第几步，能单独停、能全部停
         compose.onNodeWithText("清理执行员").assertExists()
-        compose.onNodeWithText("测试员").assertExists()
-        assertEquals(2, compose.onAllNodesWithText("删了 3 个缓存目录").fetchSemanticsNodes().size)
-        assertEquals(
-            1,
-            compose.onAllNodesWithText("在执行「读取文件」 · 第 4 步", substring = true).fetchSemanticsNodes().size,
-        )
+        assertEquals(1, compose.onAllNodesWithText("在执行「读取文件」 · 第 4 步", substring = true).fetchSemanticsNodes().size)
         compose.onAllNodesWithText("停下")[0].performClick()
-        assertEquals(listOf("r1"), stopped)
         compose.onNodeWithText("全部停下（2）").performClick()
-        assertEquals(listOf("r1", "r1", "r2"), stopped)
+        assertEquals(listOf("stop:r1", "stop:r1", "stop:r2"), calls)
+        calls.clear()
+
+        // 终端：命令、在跑 / 退出码；看输出、结束、关掉
+        assertEquals(2, compose.onAllNodesWithText("ctest -R http --output-on-failure").fetchSemanticsNodes().size)
+        compose.onNodeWithText("在跑").assertExists()
+        compose.onNodeWithText("已结束 · 退出码 1").assertExists()
+        compose.onAllNodesWithText("看输出")[0].performClick()
+        compose.onNodeWithText("PASS 12/12").assertExists()
+        compose.onNodeWithText("结束").performScrollTo().performClick()
+        compose.onNodeWithText("关掉").performScrollTo().performClick()
+        assertEquals(listOf("output:term1", "close:term1", "close:term2"), calls)
+        calls.clear()
+
+        // 定时任务：内容第一行、什么时候跑、跑过几次、上次结果；马上跑、暂停
+        compose.onNodeWithText("跑模拟盘并汇报").assertExists()
+        compose.onNodeWithText("工作日 17:45 · 跑过 12 次").assertExists()
+        compose.onNodeWithText("上次：B 净值 1.03").assertExists()
+        compose.onNodeWithText("马上跑").performScrollTo().performClick()
+        compose.onNodeWithText("暂停").performScrollTo().performClick()
+        assertEquals(listOf("run:loop1", "pause:loop1:true"), calls)
+    }
+
+    @Test
+    fun `助手页输入框上面挂助手名下的定时任务`() {
+        val assistant = AssistantState.fromJson(buildJsonObject { put("enabled", true); put("config", buildJsonObject { put("name", "小F") }) })
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                assistant = assistant,
+                loops = listOf(loopTask("a1", conversation = null, target = "assistant"), loopTask("c1")),
+            )
+        )
+        render(model) { AssistantComposer(remember { ComposerDraft() }) }
+        compose.onNodeWithText("后台：1 个定时任务").assertExists()
     }
 
     @Test

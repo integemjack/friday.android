@@ -292,9 +292,9 @@ fun ChatComposer(drafts: ChatDrafts) {
     val thinking = effectiveThinking(summary?.thinking ?: runtime?.thinkingLevel, levels)
     val directory = chat?.workingDirectory?.takeIf { it.isNotBlank() }
     val server = (state.conn as? com.integemjack.friday.proto.ConnState.Connected)?.server
-    // 这段会话的任务状态（activity 快照 / step 事件）和派到后台的子 Agent（team 事件）
+    // 这段会话的任务状态（activity 快照 / step 事件）和后台任务（后台子 Agent、终端、定时任务）
     val task = state.activities.firstOrNull { it.id == id }?.task
-    val background = backgroundRuns(state.team, id)
+    val background = conversationBackground(state, id)
     var agentsOpen by remember { mutableStateOf(false) }
 
     fun change(what: String, block: suspend () -> Unit) {
@@ -347,7 +347,7 @@ fun ChatComposer(drafts: ChatDrafts) {
         above = {
             // 任务状态（智能体记下的目标和步骤）、后台的子 Agent：在排队、重试上面
             task?.let { TaskBar(it, generating) }
-            BackgroundAgentsBar(background, onOpen = { agentsOpen = true })
+            BackgroundBar(background, onOpen = { agentsOpen = true })
             runtime?.let { rt -> QueueBar(rt) }
             if (runtime?.canRetry == true && !generating) {
                 ComposerNotice(
@@ -436,14 +436,18 @@ fun ChatComposer(drafts: ChatDrafts) {
     }
 
     if (agentsOpen) {
-        BackgroundAgentsSheet(
-            runs = background,
-            onStop = { agentID ->
-                scope.launch {
-                    runCatching { model.client.stopAgent(agentID) }
-                        .onFailure { sendError = "没停下" to (it.message ?: "") }
-                }
-            },
+        fun act(what: String, block: suspend () -> Unit) {
+            scope.launch { runCatching { block() }.onFailure { sendError = what to (it.message ?: "") } }
+        }
+        BackgroundSheet(
+            tasks = background,
+            actions = BackgroundActions(
+                stopAgent = { agentID -> act("没停下") { model.client.stopAgent(agentID) } },
+                closeTerminal = { terminalID -> act("没关掉终端") { model.client.closeTerminal(terminalID) } },
+                terminalOutput = { terminalID -> model.client.terminalOutput(terminalID) },
+                setLoopPaused = { loopID, paused -> act(if (paused) "没暂停" else "没恢复") { model.client.setLoopPaused(loopID, paused) } },
+                runLoopNow = { loopID -> act("没跑起来") { model.client.runLoopNow(loopID) } },
+            ),
             onDismiss = { agentsOpen = false },
         )
     }

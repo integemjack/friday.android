@@ -768,6 +768,9 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
     val shareLocation = rememberLocationShare(draft)
     var sayError by remember { mutableStateOf<Pair<String, String>?>(null) }
     var sheetOpen by remember { mutableStateOf(false) }
+    // 助手名下的定时任务（助手那里 /loop 建的）：输入框上面一行，点开面板
+    val background = assistantBackground(state)
+    var backgroundOpen by remember { mutableStateOf(false) }
     val assistant = state.assistant
     val speaking = assistant?.speaking == true
     val direct = directTarget(draft.input)
@@ -836,6 +839,7 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
             }
         },
         above = {
+            BackgroundBar(background, onOpen = { backgroundOpen = true })
             // 「#短号 …」= 这条不经大脑、原样转给那段会话，先说清楚再发
             if (direct != null) {
                 ComposerNotice(
@@ -948,6 +952,20 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
             ),
         )
         ComposerSheet(menu, onDismiss = { sheetOpen = false })
+    }
+
+    if (backgroundOpen) {
+        fun act(what: String, block: suspend () -> Unit) {
+            scope.launch { runCatching { block() }.onFailure { sayError = what to (it.message ?: "") } }
+        }
+        BackgroundSheet(
+            tasks = background,
+            actions = BackgroundActions(
+                setLoopPaused = { loopID, paused -> act(if (paused) "没暂停" else "没恢复") { model.client.setLoopPaused(loopID, paused) } },
+                runLoopNow = { loopID -> act("没跑起来") { model.client.runLoopNow(loopID) } },
+            ),
+            onDismiss = { backgroundOpen = false },
+        )
     }
 
     sayError?.let { (title, message) ->

@@ -76,6 +76,10 @@ data class FridayState(
     val activities: List<SessionActivity> = emptyList(),
     /** 这台的子 Agent（TeamState.runs）：会话页的「后台」标签和面板用 */
     val team: List<TeamRun> = emptyList(),
+    /** 这台的内置终端（run_in_terminal 开的；TerminalsState）：后台任务里列这段会话的 */
+    val terminals: List<TerminalInfo> = emptyList(),
+    /** 这台的定时任务（/loop；LoopsState，连上时 loops.list 取一次、之后收 loops 事件） */
+    val loops: List<LoopTask> = emptyList(),
     /** attention 事件计数（有待确认的调用时 +1，后台时据此发系统通知） */
     val attentionTick: Long = 0,
     /** 当前打开的会话 id（null = 没开） */
@@ -241,6 +245,7 @@ class FridayClient(
                 summaries = summaries,
                 runner = runner,
                 team = TeamRun.listFrom(snapshot?.get("team") as? JsonObject),
+                terminals = TerminalInfo.listFrom(snapshot?.get("terminals") as? JsonObject),
                 engines = engines?.engines ?: emptyList(),
                 defaultEngineID = engines?.defaultEngineID,
                 directories = directories,
@@ -251,6 +256,8 @@ class FridayClient(
             // 连上就订活动（审批提醒、任务状态）：要回复里的快照（以前 notify 拿不到快照，
             // 之后的事件又只更新已有的条目，活动列表一直是空的）
             scope.launch { refreshActivities() }
+            // 定时任务不在 hello 里：取一次（之后这个客户端就收 loops 事件）
+            if (server.features.contains("loops")) scope.launch { runCatching { refreshLoops() } }
             if (assistantWanted) runCatching { subscribeAssistant() }
             // 开着一段会话（断线前开的 / 离线时看的快照）：重新订上，换成实时的
             state.value.openConversationId?.let { id -> scope.launch { runCatching { subscribeConversation(id) } } }
@@ -330,6 +337,8 @@ class FridayClient(
             runner = null,
             activities = emptyList(),
             team = emptyList(),
+            terminals = emptyList(),
+            loops = emptyList(),
             openConversationId = null,
             chat = null,
             cachedAt = if (dataBotId > 0) since else null,
@@ -381,6 +390,10 @@ class FridayClient(
             "runner" -> state.value = state.value.copy(runner = RunnerState.fromJson(params))
             // 子 Agent 登记 / 注销、在做什么、第几步变了（整份 TeamState）
             "team" -> state.value = state.value.copy(team = TeamRun.listFrom(params))
+            // 内置终端开了、关了、跑完了（整份 TerminalsState）
+            "terminals" -> state.value = state.value.copy(terminals = TerminalInfo.listFrom(params))
+            // 定时任务变了（整份 LoopsState；调过 loops.* 才收）
+            "loops" -> state.value = state.value.copy(loops = LoopTask.listFrom(params))
             "directories" -> state.value = state.value.copy(directories = recentDirectories(params))
             "engines" -> {
                 val engines = EnginesState.fromJson((params["engines"] as? JsonObject) ?: params)
@@ -647,6 +660,51 @@ class FridayClient(
     suspend fun stopAgent(agentID: String) {
         val rpc = rpc ?: throw Exception("未连接")
         rpc.request("agent.stop", buildJsonObject { put("agentID", agentID) })
+    }
+
+    // MARK: 后台任务：终端、定时任务
+
+    /** 结束一个内置终端（shell 和它起的进程），从列表去掉（term.close） */
+    suspend fun closeTerminal(id: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        rpc.request("term.close", buildJsonObject { put("id", id) })
+    }
+
+    /**
+     * 一个终端最近的输出（term.attach 给最近 512 KB 原始字节，拿到就 term.detach，不接着收实时输出）：
+     * 去掉控制序列，只留最后几十行
+     */
+    suspend fun terminalOutput(id: String): String {
+        val rpc = rpc ?: throw Exception("未连接")
+        val result = rpc.request("term.attach", buildJsonObject { put("id", id) }).jsonObject
+        runCatching { rpc.notify("term.detach", buildJsonObject { put("id", id) }) }
+        val data = result.str("data").orEmpty()
+        val bytes = if (data.isEmpty()) ByteArray(0) else java.util.Base64.getDecoder().decode(data)
+        return terminalText(bytes)
+    }
+
+    /** 取一次定时任务（loops.list；调过以后收 loops 事件） */
+    suspend fun refreshLoops() {
+        val rpc = rpc ?: return
+        val result = rpc.request("loops.list").jsonObject
+        state.value = state.value.copy(loops = LoopTask.listFrom(result))
+    }
+
+    /** 暂停 / 恢复一个定时任务（恢复时不补暂停期间错过的） */
+    suspend fun setLoopPaused(id: String, paused: Boolean) {
+        val rpc = rpc ?: throw Exception("未连接")
+        val result = rpc.request("loops.setPaused", buildJsonObject {
+            put("id", id)
+            put("paused", paused)
+        }).jsonObject
+        state.value = state.value.copy(loops = LoopTask.listFrom(result))
+    }
+
+    /** 马上跑一次（在跑的不重复跑） */
+    suspend fun runLoopNow(id: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        val result = rpc.request("loops.runNow", buildJsonObject { put("id", id) }).jsonObject
+        state.value = state.value.copy(loops = LoopTask.listFrom(result))
     }
 
     /** 切到另一条分支（parentKey 空串 = 根消息那一层） */
