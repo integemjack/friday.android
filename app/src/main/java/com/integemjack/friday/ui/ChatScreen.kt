@@ -94,6 +94,7 @@ import com.integemjack.friday.proto.blockMedia
 import com.integemjack.friday.proto.blockText
 import com.integemjack.friday.proto.blockThinking
 import com.integemjack.friday.proto.blockTool
+import com.integemjack.friday.proto.contextUsageOf
 import com.integemjack.friday.proto.fileChange
 import com.integemjack.friday.proto.fileLineCounts
 import com.integemjack.friday.proto.toolArgumentsText
@@ -431,6 +432,8 @@ fun ChatComposer(drafts: ChatDrafts) {
                     list = { path -> model.client.listDirectory(path) },
                 ),
             ),
+            // 上下文用了多少：按这条路径上最近一次请求的统计、现在用的模型（一个模型都没接入时不显示）
+            context = contextUsageOf(chat?.messages.orEmpty(), engine?.model?.ifBlank { engine.title }),
         )
         ComposerSheet(menu, onDismiss = { sheetOpen = false })
     }

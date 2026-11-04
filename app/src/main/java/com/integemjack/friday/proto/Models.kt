@@ -301,17 +301,64 @@ data class ToolEvent(
     }
 }
 
-/** 一次生成的用量（REMOTE.md §5 GenerationStats，只取界面上要显示的几个） */
+/**
+ * 一次生成的用量（REMOTE.md §5 GenerationStats，只取界面上要显示的几个）。
+ * context* 是这一轮结束时的上下文（＋面板里的「上下文」：用了多少、由哪几部分组成、模型的上限，== Qt ChatModels.h）。
+ */
 data class GenerationStats(
     val tokensPerSecond: Double,
     val tokenCount: Long,
+    /** 在线引擎：「服务商 · 模型名」（本地引擎没有） */
     val engineName: String? = null,
+    /** 本轮结束时的上下文占用（缓存前缀 + 本轮提示 + 生成） */
+    val contextTokenCount: Long? = null,
+    /** contextTokenCount 由哪几部分组成（v2.74；之前的回复没有） */
+    val contextParts: ContextParts? = null,
+    /** 模型的上下文上限（模型、服务商报的；都没报时按那台 设置 › 智能体 的最大上下文长度，[contextLimitGuessed]） */
+    val contextLimit: Long? = null,
+    val contextLimitGuessed: Boolean? = null,
+    /** 本地大模型超过多少自动压缩较早的历史 */
+    val contextCompactAt: Long? = null,
 ) {
     companion object {
         fun fromJson(o: JsonObject): GenerationStats = GenerationStats(
             tokensPerSecond = o.dbl("tokensPerSecond") ?: 0.0,
             tokenCount = o.long("tokenCount") ?: 0L,
             engineName = o.str("engineName"),
+            contextTokenCount = o.long("contextTokenCount"),
+            contextParts = (o["contextParts"] as? JsonObject)?.let { ContextParts.fromJson(it) },
+            contextLimit = o.long("contextLimit"),
+            contextLimitGuessed = o.bool("contextLimitGuessed"),
+            contextCompactAt = o.long("contextCompactAt"),
+        )
+    }
+}
+
+/** 一次请求的上下文由哪几部分组成（== Qt ContextParts；按字数估算后等比例缩放到服务端报的合计） */
+data class ContextParts(
+    /** 系统提示（框架、记忆、技能、项目说明……都在里面） */
+    val system: Long = 0,
+    /** 工具定义 */
+    val tools: Long = 0,
+    /** 用户消息（含 Friday 插进去的检查、补充） */
+    val user: Long = 0,
+    /** 助手的正文和思考 */
+    val replies: Long = 0,
+    /** 工具调用的参数和工具结果 */
+    val toolUse: Long = 0,
+) {
+    val total: Long get() = system + tools + user + replies + toolUse
+
+    /** 按明细里的顺序 */
+    val values: List<Long> get() = listOf(system, tools, user, replies, toolUse)
+
+    companion object {
+        fun fromJson(o: JsonObject): ContextParts = ContextParts(
+            system = o.long("system") ?: 0,
+            tools = o.long("tools") ?: 0,
+            user = o.long("user") ?: 0,
+            replies = o.long("replies") ?: 0,
+            toolUse = o.long("toolUse") ?: 0,
         )
     }
 }

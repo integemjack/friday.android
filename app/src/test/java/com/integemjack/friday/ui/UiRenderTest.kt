@@ -1128,7 +1128,10 @@ class UiRenderTest {
         ),
     )
 
-    private fun chatWithSettings(levels: List<String>? = listOf("off", "low", "medium", "high")) = modelWith(
+    private fun chatWithSettings(
+        levels: List<String>? = listOf("off", "low", "medium", "high"),
+        messages: List<ChatMessage> = listOf(message("1", "user", listOf(textBlock("b1", "hi")))),
+    ) = modelWith(
         FridayState(
             conn = connected,
             engines = engines,
@@ -1147,7 +1150,7 @@ class UiRenderTest {
             ),
             openConversationId = "C1",
             chat = chatState(
-                listOf(message("1", "user", listOf(textBlock("b1", "hi")))),
+                messages,
                 runtime = runtime().copy(thinkingLevel = "medium", thinkingLevels = levels),
             ),
         )
@@ -1212,6 +1215,85 @@ class UiRenderTest {
     fun `这个模型不能调思考时写不能调`() {
         renderChat(chatWithSettings(levels = emptyList()))
         compose.onNodeWithText("glm-4.6 · 按需派 · 思考 不能调").assertIsDisplayed()
+    }
+
+    // MARK: 加号里的上下文用量
+
+    /** 一问一答，答的那条统计里记着上下文（[engineName] 是那次请求的模型） */
+    private fun answered(stats: GenerationStats) = listOf(
+        message("1", "user", listOf(textBlock("b1", "hi"))),
+        message("2", "assistant", listOf(textBlock("b2", "你好")), parent = "1", stats = stats),
+    )
+
+    @Test
+    fun `加号里显示上下文用了多少，点开展开各部分明细，再点收起`() {
+        renderChat(
+            chatWithSettings(
+                messages = answered(
+                    GenerationStats(
+                        30.0, 120, "智谱 · glm-4.6",
+                        contextTokenCount = 48_200, contextLimit = 128_000, contextLimitGuessed = false,
+                        contextParts = com.integemjack.friday.proto.ContextParts(2100, 6000, 10000, 20100, 10000),
+                    )
+                ),
+            )
+        )
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("上下文").assertIsDisplayed()
+        compose.onNodeWithText("48.2K / 128K（38%）").assertIsDisplayed()
+        // 没点开：明细不在
+        assertNoText("系统提示")
+        assertNoText("空余")
+
+        compose.onNodeWithText("上下文").performClick()
+        compose.waitForIdle()
+        listOf("系统提示", "工具定义", "用户消息", "回复和思考", "工具调用和结果", "空余").forEach {
+            compose.onNodeWithText(it).assertIsDisplayed()
+        }
+        compose.onNodeWithText("20.1K").assertIsDisplayed()
+        compose.onNodeWithText("79.8K").assertIsDisplayed()
+        compose.onNodeWithText("62%").assertIsDisplayed()
+        compose.onNodeWithText("上限是 glm-4.6 或服务商报的").assertIsDisplayed()
+        compose.onNodeWithText("合计是最近一次请求的实际用量，各部分按字数估算").assertIsDisplayed()
+        // 分段条的读屏说法：每部分多少、占多少
+        compose.onNodeWithContentDescription("系统提示 2.1K（2%）", substring = true).assertExists()
+
+        compose.onNodeWithText("上下文").performClick()
+        compose.waitForIdle()
+        assertNoText("系统提示")
+        // 下面的设置照旧
+        compose.onNodeWithText("模型").assertIsDisplayed()
+    }
+
+    @Test
+    fun `换了模型以后不知道新模型的上限，之前的回复没明细时写已用多少`() {
+        renderChat(
+            chatWithSettings(
+                messages = answered(
+                    GenerationStats(30.0, 120, "Anthropic · claude-sonnet-4.5", contextTokenCount = 48_200, contextLimit = 200_000)
+                ),
+            )
+        )
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("48.2K tokens").assertIsDisplayed()
+        compose.onNodeWithText("上下文").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("已用 48,200 tokens；这段对话之前的回复没记明细，下一次回复后就有").assertIsDisplayed()
+        compose.onNodeWithText("不知道 glm-4.6 的上下文上限").assertIsDisplayed()
+        assertNoText("空余")
+    }
+
+    @Test
+    fun `有消息但那台没报上下文时写还没记下`() {
+        renderChat(chatWithSettings(messages = answered(GenerationStats(30.0, 120, "智谱 · glm-4.6"))))
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("还没记下").assertIsDisplayed()
+        compose.onNodeWithText("上下文").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("还没记下上下文用量，下一次回复后就有").assertIsDisplayed()
     }
 
     @Test

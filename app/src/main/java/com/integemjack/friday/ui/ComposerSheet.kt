@@ -59,6 +59,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.integemjack.friday.proto.ContextUsage
 import com.integemjack.friday.proto.FsListing
 import com.integemjack.friday.proto.RecentDirectory
 import com.integemjack.friday.proto.UsageLine
@@ -66,6 +67,7 @@ import com.integemjack.friday.ui.theme.LocalFridayExtra
 
 /*
  * 输入框左下角「＋」点出来的那张底部面板：上面一排快捷（附件，助手页还有视频通话），
+ * 会话页接着是这段会话的上下文用量（点开展开明细），
  * 下面是这段对话 / 助手的设置——模型、任务模式、思考模式、工作目录，点一行进到它的列表，选完回来。
  * 会话页、助手页用的是同一张面板，只是给的东西不同（ChatComposer / AssistantComposer 拼 [ComposerMenu]）。
  */
@@ -74,6 +76,8 @@ import com.integemjack.friday.ui.theme.LocalFridayExtra
 class ComposerMenu(
     val quick: List<QuickAction>,
     val rows: List<MenuRow>,
+    /** 这段会话的上下文用量（会话页才有）：快捷下面、设置上面一行，点开在原地展开明细（[ContextUsageCard]） */
+    val context: ContextUsage? = null,
 )
 
 /** 上面一排的快捷：点了就做、面板收起 */
@@ -201,6 +205,14 @@ fun ComposerMenuContent(menu: ComposerMenu, onClose: () -> Unit) {
 
 @Composable
 private fun MainPage(menu: ComposerMenu, onOpenRow: (Int) -> Unit, onClose: () -> Unit) {
+    // 上下文明细展开以后（横屏、矮屏）可能放不下：首页能滚
+    Column(Modifier.verticalScroll(rememberScrollState())) {
+        MainPageContent(menu, onOpenRow, onClose)
+    }
+}
+
+@Composable
+private fun MainPageContent(menu: ComposerMenu, onOpenRow: (Int) -> Unit, onClose: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     if (menu.quick.isNotEmpty()) {
         Row(
@@ -216,6 +228,10 @@ private fun MainPage(menu: ComposerMenu, onOpenRow: (Int) -> Unit, onClose: () -
                 }
             }
         }
+        Spacer(Modifier.height(10.dp))
+    }
+    menu.context?.let {
+        ContextUsageCard(it)
         Spacer(Modifier.height(10.dp))
     }
     if (menu.rows.isNotEmpty()) {
