@@ -129,21 +129,10 @@ fun ChatScreen() {
     // （以前倒着排贴底，点开一行会把它和上面的都往上顶，只能事后滚回来，一跳一跳的）
     // 每段会话一份滚动位置，一打开就停在最底下：最后一项、偏移给到很大，列表自己收到「最后一条的底贴着底」
     val listState = rememberSaveable(chat?.id, saver = LazyListState.Saver) {
-        LazyListState((messages.size + (if (showDots) 1 else 0) - 1).coerceAtLeast(0), END_OFFSET)
+        LazyListState((messages.size + (if (showDots) 1 else 0) - 1).coerceAtLeast(0), LIST_END_OFFSET)
     }
-    // 贴底跟随：在最底下时，来了新的、最后一条流式变长（每次排版完看一眼）就跟到底；
-    // 自己往上翻了、或者点开了什么（FollowBottom），就不跟，直到又滑回最底下
-    val follow = remember(chat?.id) { FollowBottom() }
-    LaunchedEffect(listState, follow) {
-        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-            if (!scrolling) follow.following = !listState.canScrollForward
-        }
-    }
-    LaunchedEffect(listState, follow) {
-        snapshotFlow { listState.layoutInfo }.collect {
-            if (follow.following && listState.canScrollForward && !listState.isScrollInProgress) listState.scrollToEnd()
-        }
-    }
+    // 贴底跟随：在最底下时来了新的、最后一条流式变长就跟到底；往上翻了、或者点开了什么，就不跟（FollowBottom.kt）
+    val follow = rememberFollowBottom(listState, chat?.id)
     val atBottom by remember(listState) { derivedStateOf { !listState.canScrollForward } }
 
     Scaffold(
@@ -242,18 +231,6 @@ fun ChatScreen() {
 
 /** 消息流里「思考中…」那一项的 key（消息 id 是服务端给的，不会撞上这个） */
 private const val GENERATING_KEY = "friday.ui:generating"
-
-/**
- * 滚到最后一项的「偏移」：比任何一条消息都高。列表排版时偏移超出那一项就往回收，
- * 收到「最后一项的底贴着列表底」为止——这样一步到底，长消息也是看到它的结尾，不是它的头
- */
-private const val END_OFFSET = 1_000_000
-
-/** 滚到最底下（最后一条的结尾贴着输入框上沿） */
-private suspend fun LazyListState.scrollToEnd() {
-    val count = layoutInfo.totalItemsCount
-    if (count > 0) scrollToItem(count - 1, END_OFFSET)
-}
 
 // MARK: 输入框
 

@@ -1,5 +1,6 @@
 package com.integemjack.friday.ui
 
+import com.integemjack.friday.proto.JournalEntry
 import com.integemjack.friday.proto.MessageBlock
 import com.integemjack.friday.proto.TOOL_MEDIA_ARG
 import com.integemjack.friday.proto.ToolEvent
@@ -82,6 +83,52 @@ data class OpsSummary(
 )
 
 fun toolTitle(tool: ToolEvent): String = tool.title?.ifBlank { tool.name } ?: tool.name
+
+// MARK: 助手页的日志
+
+/** 助手页一行：单独一条日志，或者收起来的一串连续的工具调用 */
+sealed interface JournalItem {
+    val key: String
+    val first: JournalEntry
+
+    data class Single(val entry: JournalEntry) : JournalItem {
+        override val key: String get() = entry.id
+        override val first: JournalEntry get() = entry
+    }
+
+    data class Tools(val entries: List<JournalEntry>) : JournalItem {
+        override val key: String get() = "tools:" + entries.first().id
+        override val first: JournalEntry get() = entries.first()
+
+        /** 「search_memory ×2、say」：按第一次出现的顺序 */
+        val kinds: String
+            get() {
+                val counts = LinkedHashMap<String, Int>()
+                entries.forEach { counts.merge(journalToolName(it), 1, Int::plus) }
+                return counts.entries.joinToString("、") { (name, n) -> if (n > 1) "$name ×$n" else name }
+            }
+    }
+}
+
+fun journalToolName(entry: JournalEntry): String = entry.tool?.name?.takeIf { it.isNotBlank() } ?: entry.text
+
+/** 连着两条以上的工具调用收成一行；一天的开头（[dayStarts]，上面要画日期）把它们隔开 */
+fun groupJournal(entries: List<JournalEntry>, dayStarts: Set<String>): List<JournalItem> {
+    val out = ArrayList<JournalItem>(entries.size)
+    var i = 0
+    while (i < entries.size) {
+        if (entries[i].kind != "tool") {
+            out += JournalItem.Single(entries[i])
+            i++
+            continue
+        }
+        var j = i + 1
+        while (j < entries.size && entries[j].kind == "tool" && entries[j].id !in dayStarts) j++
+        out += if (j - i >= 2) JournalItem.Tools(entries.subList(i, j).toList()) else JournalItem.Single(entries[i])
+        i = j
+    }
+    return out
+}
 
 fun opsSummary(tools: List<ToolEvent>): OpsSummary {
     val counts = LinkedHashMap<String, Int>()

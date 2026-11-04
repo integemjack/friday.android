@@ -59,6 +59,31 @@ class BlockGroupsTest {
         assertEquals("[x1,x2,T1,x3]", shape(done))
     }
 
+    private fun journal(id: String, kind: String, name: String = "") = com.integemjack.friday.proto.JournalEntry(
+        id, "2026-01-01T00:00:00Z", kind, null, if (kind == "tool") "" else "话", emptyList(), false, false,
+        if (kind == "tool") buildJsonObject { put("name", name) } else null,
+    )
+
+    @Test
+    fun `助手页连着的工具调用收成一行，一天的开头把它们隔开`() {
+        val entries = listOf(
+            journal("u", "user"),
+            journal("t1", "tool", "search_memory"), journal("t2", "tool", "search_memory"), journal("t3", "tool", "say"),
+            journal("a", "assistant"),
+            journal("t4", "tool", "say"),
+            journal("t5", "tool", "say"), journal("t6", "tool", "say"),
+        )
+        val items = groupJournal(entries, dayStarts = setOf("u", "t6"))
+        val shape = items.joinToString(" ") { item ->
+            when (item) {
+                is JournalItem.Single -> item.entry.id
+                is JournalItem.Tools -> item.entries.joinToString(",", "[", "]") { it.id }
+            }
+        }
+        assertEquals("u [t1,t2,t3] a [t4,t5] t6", shape)
+        assertEquals("search_memory ×2、say", (items[1] as JournalItem.Tools).kinds)
+    }
+
     @Test
     fun `一组写几个操作、做了哪几种、改了多少行`() {
         val group = groupBlocks(

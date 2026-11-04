@@ -1234,6 +1234,46 @@ class UiRenderTest {
         assertNoText("连上远程 Friday 才有助手")
     }
 
+    private fun journalEntry(id: String, kind: String, text: String, tool: String? = null) =
+        com.integemjack.friday.proto.JournalEntry(
+            id, "2026-01-01T00:00:${id.filter { it.isDigit() }.padStart(2, '0').takeLast(2)}Z", kind, null, text,
+            emptyList(), false, false,
+            tool?.let { buildJsonObject { put("name", it); put("arguments", """{"query":"$text"}"""); put("result", "查到 3 条") } },
+        )
+
+    @Test
+    fun `助手页打开停在最底下；连着的工具折成一行，点开那一行原地往下长`() {
+        val assistant = AssistantState.fromJson(buildJsonObject { put("enabled", true); put("config", buildJsonObject { put("name", "小F") }) })
+        val entries = (1..30).map { journalEntry("u$it", if (it % 2 == 0) "assistant" else "user", "第 $it 句") } +
+            listOf(
+                journalEntry("t1", "tool", "天气", tool = "search_memory"),
+                journalEntry("t2", "tool", "日程", tool = "search_memory"),
+                journalEntry("t3", "tool", "提醒", tool = "say"),
+                journalEntry("z1", "assistant", "最后一句"),
+            )
+        val model = modelWith(
+            FridayState(conn = ConnState.Disconnected, assistant = assistant, assistantEntries = entries, cachedAt = System.currentTimeMillis())
+        )
+        render(model) { AssistantScreen() }
+
+        // 一打开在最底下：最后一句在，最早的不在
+        compose.onNodeWithText("最后一句").assertIsDisplayed()
+        assertNoText("第 1 句")
+        // 三次工具调用折成一行
+        compose.onNodeWithText("search_memory ×2、say").assertExists()
+
+        val before = compose.onNodeWithText("search_memory ×2、say").getBoundsInRoot().top
+        compose.onNodeWithText("search_memory ×2、say").performClick()
+        compose.waitForIdle()
+        val after = compose.onNodeWithText("search_memory ×2、say").getBoundsInRoot().top
+        assertTrue("工具那一行被顶走了：$before → $after", kotlin.math.abs((after - before).value) <= 2f)
+        assertEquals(2, compose.onAllNodesWithText("search_memory").fetchSemanticsNodes().size)
+
+        // 点开其中一条：参数不贴 JSON
+        compose.onAllNodesWithText("search_memory")[0].performClick()
+        compose.onNodeWithText("query: 天气").assertExists()
+    }
+
     @Test
     fun `离线点开会话看存下来的内容，输入框说清楚现在不能发`() {
         val model = modelWith(FridayState(conn = ConnState.Disconnected, summaries = listOf(offlineSummary)))

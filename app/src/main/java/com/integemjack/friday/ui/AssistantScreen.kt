@@ -1,5 +1,8 @@
 package com.integemjack.friday.ui
 
+import androidx.compose.runtime.key
+import androidx.compose.animation.animateContentSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,7 +26,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
@@ -104,9 +106,6 @@ fun AssistantScreen(
     val scope = rememberCoroutineScope()
     val assistant = state.assistant
     val entries = state.assistantEntries.filterNot { it.silent }
-    // 时间线倒着排（reverseLayout）：最新那条在 index 0 = 屏幕最下面，往上翻就是往更早翻。
-    // 正着排的话内容不够一屏时全堆在顶上，输入框上面空一大块
-    val timeline = remember(entries) { entries.asReversed() }
     // 哪几条是一天的开头：按日志原顺序算一次，别每条都 indexOfFirst
     val dayStarts = remember(entries) {
         buildSet {
@@ -115,7 +114,15 @@ fun AssistantScreen(
             }
         }
     }
-    val listState = rememberLazyListState()
+    // 连着的工具调用收成一行（一天的开头隔开）
+    val timeline = remember(entries, dayStarts) { groupJournal(entries, dayStarts) }
+    // 时间线从上往下排（同会话页）：点开工具时那一行留在原地往下长，不再一跳一跳。
+    // 一打开就停在最底下（最后一项、偏移给到很大）；日志第一次到手时重建一份，第一帧就在底下
+    val listState = rememberSaveable(timeline.isEmpty(), saver = LazyListState.Saver) {
+        LazyListState((timeline.size - 1).coerceAtLeast(0), LIST_END_OFFSET)
+    }
+    // 贴底跟随：在最底下时来了新的、回复流式变长就跟到底；往上翻了、点开了什么，就不跟（FollowBottom.kt）
+    val follow = rememberFollowBottom(listState, Unit)
     var sayError by remember { mutableStateOf<String?>(null) }
 
     // 进这页才订助手（assistant.subscribe），离开退订：日志和状态板的事件量不小
@@ -125,19 +132,13 @@ fun AssistantScreen(
     DisposableEffect(Unit) {
         onDispose { model.client.leaveAssistant() }
     }
-    // 新内容跟着底部：只有本来就贴着底部时才滚，翻历史时不把用户拽走
-    LaunchedEffect(entries.size, assistant?.reactingEntryID) {
-        if (entries.isEmpty()) return@LaunchedEffect
-        if (listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
-    }
-    // 翻到顶了（= 倒排列表的最后一个 index）再取一页更早的；
+    // 翻到顶了再取一页更早的（插在上面，列表按 key 留在原处，不跳）；
     // 内容没占满一屏时不触发，免得刚进来就空转
     LaunchedEffect(listState) {
         snapshotFlow {
             val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()
-            last != null && info.totalItemsCount > info.visibleItemsInfo.size &&
-                last.index >= info.totalItemsCount - 2
+            val first = info.visibleItemsInfo.firstOrNull()
+            first != null && info.totalItemsCount > info.visibleItemsInfo.size && first.index <= 1
         }.distinctUntilChanged().collect { atTop ->
             if (atTop) {
                 val live = model.client.state.value
@@ -217,10 +218,10 @@ fun AssistantScreen(
                         )
                     }
                     // 列表一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐
+                    CompositionLocalProvider(LocalFollowBottom provides follow) {
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize().fadeTopEdge(),
-                        reverseLayout = true,
                         contentPadding = PaddingValues(
                             start = 12.dp,
                             end = 12.dp,
@@ -229,23 +230,9 @@ fun AssistantScreen(
                         ),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(timeline, key = { it.id }) { entry ->
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (entry.id in dayStarts) DayDivider(entry.at)
-                                EntryRow(
-                                    entry = entry,
-                                    onOpenSession = onOpenSession,
-                                    onDecide = { machineID, eventID, approved ->
-                                        scope.launch {
-                                            model.client.resolveAssistantApproval(machineID, eventID, approved)
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                        // 倒排：这两项 index 最大 = 屏幕最上面，正是它们该在的位置
+                        // 最上面：翻更早的、还没有动静
                         if (state.assistantLoading) {
-                            item {
+                            item(key = "friday.ui:older") {
                                 Row(
                                     Modifier.fillMaxWidth().padding(vertical = 2.dp),
                                     horizontalArrangement = Arrangement.Center,
@@ -257,7 +244,7 @@ fun AssistantScreen(
                             }
                         }
                         if (timeline.isEmpty() && !state.assistantLoading) {
-                            item {
+                            item(key = "friday.ui:empty") {
                                 EmptyState(
                                     icon = Icons.Filled.SelfImprovement,
                                     title = "还没有动静",
@@ -265,6 +252,24 @@ fun AssistantScreen(
                                 )
                             }
                         }
+                        items(timeline, key = { it.key }) { item ->
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (item.first.id in dayStarts) DayDivider(item.first.at)
+                                when (item) {
+                                    is JournalItem.Tools -> ToolGroupRow(item)
+                                    is JournalItem.Single -> EntryRow(
+                                        entry = item.entry,
+                                        onOpenSession = onOpenSession,
+                                        onDecide = { machineID, eventID, approved ->
+                                            scope.launch {
+                                                model.client.resolveAssistantApproval(machineID, eventID, approved)
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                     }
                 }
             }
@@ -446,17 +451,81 @@ private fun ReceiptRow(
     }
 }
 
-/** 工具那一条：默认只一行（› + 名字 + 时间，不包卡片），点开看参数和结果 */
+/**
+ * 连着的几条工具调用收成一行：「› search_memory ×2、say   23:41」（时间是最后一条的）；
+ * 点开一行一条，那一行留在原地、往下长
+ */
+@Composable
+private fun ToolGroupRow(group: JournalItem.Tools) {
+    var expanded by remember(group.key) { mutableStateOf(false) }
+    val holdPosition = rememberHoldPosition()
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(Modifier.fillMaxWidth().animateContentSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable {
+                    holdPosition()
+                    expanded = !expanded
+                }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.width(LineIndent)) {
+                Icon(
+                    Icons.Filled.ChevronRight,
+                    contentDescription = if (expanded) "收起" else "展开",
+                    tint = muted,
+                    modifier = Modifier
+                        .size(16.dp)
+                        .graphicsLayer { if (expanded) rotationZ = 90f },
+                )
+            }
+            Text(
+                group.kinds,
+                style = MaterialTheme.typography.labelLarge,
+                color = muted,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                clockOf(group.entries.last().at),
+                style = MaterialTheme.typography.labelSmall,
+                color = muted.copy(alpha = 0.7f),
+            )
+        }
+        if (expanded) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp)
+                    .leftRule(MaterialTheme.colorScheme.outlineVariant),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                group.entries.forEach { entry -> key(entry.id) { ToolRow(entry) } }
+            }
+        }
+    }
+}
+
+/** 工具那一条：默认只一行（› + 名字 + 时间，不包卡片），点开看参数和结果；那一行留在原地、往下长 */
 @Composable
 private fun ToolRow(entry: JournalEntry) {
     var expanded by remember(entry.id) { mutableStateOf(false) }
+    val holdPosition = rememberHoldPosition()
     val tool = entry.tool
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         Modifier
             .fillMaxWidth()
+            .animateContentSize()
             .clip(RoundedCornerShape(6.dp))
-            .clickable { expanded = !expanded }
+            .clickable {
+                holdPosition()
+                expanded = !expanded
+            }
             .padding(vertical = 2.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -493,7 +562,8 @@ private fun ToolRow(entry: JournalEntry) {
                     .leftRule(MaterialTheme.colorScheme.outlineVariant),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                tool?.arguments?.takeIf { it.isNotBlank() }?.let {
+                // 参数不贴 JSON：跑命令的「$ 命令」，别的「键: 值」一行一个
+                tool?.arguments?.let { com.integemjack.friday.proto.toolArgumentsText(it) }?.let {
                     Text("参数", style = MaterialTheme.typography.labelSmall, color = muted)
                     MonospaceBlock(it.take(2000), maxLines = 12)
                 }
