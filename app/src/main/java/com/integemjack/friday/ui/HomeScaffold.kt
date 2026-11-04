@@ -35,11 +35,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -99,6 +101,7 @@ fun HomeScaffold(
     tab: Int,
     onTab: (Int) -> Unit,
     dock: (@Composable () -> Unit)? = null,
+    onNewConversation: () -> Unit = {},
     assistant: @Composable () -> Unit,
     sessions: @Composable () -> Unit,
     activity: @Composable () -> Unit,
@@ -118,6 +121,7 @@ fun HomeScaffold(
         }
 
         // 侧栏：宽度按比例给够，位移 = 已拉出的部分 - 自身宽度（没拉出时整个藏在左边外面）
+        // 投影让它在主屏上方浮着，不跟主屏连成一片（不然看着像平板分栏）
         DrawerPanel(
             tab = tab,
             onPick = { picked ->
@@ -125,11 +129,19 @@ fun HomeScaffold(
                 closeDrawer()
             },
             closeDrawer = ::closeDrawer,
+            onNewConversation = {
+                closeDrawer()
+                onNewConversation()
+            },
             sessions = sessions,
             modifier = Modifier
                 .width(maxWidth * DRAWER_WIDTH_FRACTION)
                 .fillMaxHeight()
-                .offset { IntOffset((offset.value - drawerWidthPx).roundToInt(), 0) },
+                .offset { IntOffset((offset.value - drawerWidthPx).roundToInt(), 0) }
+                .graphicsLayer {
+                    val progress = (offset.value / drawerWidthPx).coerceIn(0f, 1f)
+                    shadowElevation = progress * 18.dp.toPx()
+                },
         )
 
         // 主屏：整块跟着手指右移；移动时左边给圆角 + 一点投影，看着是被「推开」而不是「滑走」
@@ -206,11 +218,14 @@ fun HomeScaffold(
                     }
                 }
             }
-            // 侧栏开着的时候点主屏任意处收起（盖一层透明的吃点击，不然会点进下面的列表）
-            if (offset.value > 1f) {
+            // 侧栏开着时主屏压暗一层：露出的那 1/4 看成「后面的页面」，不是被切了一半的分栏。
+            // 点一下就收起（也吃住了点击，不会点进下面的列表）
+            val progress = (offset.value / drawerWidthPx).coerceIn(0f, 1f)
+            if (progress > 0.001f) {
                 Box(
                     Modifier
                         .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.34f * progress))
                         .clickable(
                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                             indication = null,
@@ -229,6 +244,7 @@ private fun DrawerPanel(
     tab: Int,
     onPick: (Int) -> Unit,
     closeDrawer: () -> Unit,
+    onNewConversation: () -> Unit,
     sessions: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -249,10 +265,10 @@ private fun DrawerPanel(
             onPick(HomeTabs.ACTIVITY)
         }
 
-        // 会话列表整段就长在侧栏里：小标题 + 计数，下面是真列表（点一条直接进去）
-        Spacer(Modifier.height(16.dp))
+        // 会话列表整段就长在侧栏里：小标题 + 计数 + 「+」（新会话），下面是真列表
+        Spacer(Modifier.height(14.dp))
         Row(
-            Modifier.padding(start = 4.dp, end = 4.dp, bottom = 2.dp),
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 0.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -268,7 +284,18 @@ private fun DrawerPanel(
                     container = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
                 )
             }
+            Spacer(Modifier.weight(1f))
+            // 新会话：放在这里而不是悬浮按钮 —— 悬浮按钮会盖住列表最后几条
+            IconButton(onClick = onNewConversation, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "新会话",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
         }
+        Spacer(Modifier.height(4.dp))
         Box(Modifier.weight(1f).fillMaxWidth()) {
             // 侧栏里的会话行点了要先把侧栏收起来
             CompositionLocalProvider(LocalCloseDrawer provides closeDrawer) {

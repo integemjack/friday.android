@@ -117,6 +117,18 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
                 .onFailure { chatError = it.message }
         }
     }
+    // 新建会话（侧栏「会话」旁边那个 +）：开好之后直接进聊天
+    fun newConversation() {
+        if (Demo.active) {
+            showChat = true
+            return
+        }
+        scope.launch {
+            runCatching { model.client.newConversation() }
+                .onSuccess { showChat = true }
+                .onFailure { chatError = it.message }
+        }
+    }
     if (showChat) {
         ChatScreen(onBack = { showChat = false })
     } else {
@@ -131,6 +143,7 @@ fun AppRoot(tabRequest: MutableStateFlow<Int?>) {
             tab = tab,
             onTab = { tab = it },
             dock = dock,
+            onNewConversation = ::newConversation,
             assistant = { AssistantScreen(onOpenSession = ::openConversation) },
             sessions = { SessionsScreen(onOpen = { showChat = true }) },
             activity = { ActivityScreen(onOpen = { showChat = true }) },

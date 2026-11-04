@@ -83,9 +83,11 @@ fun SessionsScreen(onOpen: () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         when (val conn = state.conn) {
             is ConnState.Connected -> {
+                // 列表从顶上直接开始：「会话」标题和「+」在侧栏（HomeScaffold）那条头部里，
+                // 这里不要再画任何页头，否则会覆盖到列表第一行上
                 LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 6.dp, bottom = 84.dp),
+                    contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 2.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (state.summaries.isEmpty()) {
@@ -137,64 +139,6 @@ fun SessionsScreen(onOpen: () -> Unit) {
                         }
                     }
                 }
-                // 会话页进去就是列表：顶上只留一条紧凑栏（汉堡 + 会话数 + 连接状态），
-                // 不再用大标题把屏幕顶部一大块占掉。
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(52.dp)
-                        .background(MaterialTheme.colorScheme.background.copy(alpha = 0.96f)),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    openDrawer?.let {
-                        IconButton(onClick = it, modifier = Modifier.size(44.dp)) {
-                            Icon(
-                                Icons.Filled.Menu,
-                                contentDescription = "打开侧边栏",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                    }
-                    Text("会话", style = MaterialTheme.typography.titleMedium)
-                    if (state.summaries.isNotEmpty()) {
-                        Spacer(Modifier.width(8.dp))
-                        Chip(
-                            "${state.summaries.size}",
-                            color = MaterialTheme.colorScheme.primary,
-                            container = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Dot(MaterialTheme.colorScheme.tertiary, size = 6.dp)
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        conn.server.displayName.ifBlank { conn.server.hostname },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .widthIn(max = 150.dp)
-                            .padding(end = 14.dp),
-                    )
-                }
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        scope.launch {
-                            runCatching { model.client.newConversation() }
-                                .onSuccess { onOpen() }
-                                .onFailure { newError = it.message }
-                        }
-                    },
-                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                    text = { Text("新会话") },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(20.dp),
-                )
             }
             is ConnState.Disconnected -> ConnectHint(onOpenDrawer = openDrawer)
             is ConnState.Connecting -> Column(
