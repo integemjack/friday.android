@@ -30,6 +30,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
@@ -61,12 +63,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -94,7 +105,12 @@ import java.util.UUID
  * 容器（让位导航条和键盘）由 [HomeScaffold] 的 dock 负责，这里只画输入框本身；背后不垫底色，
  * 卡片外面看得到后面滚动的内容。
  *
- * 有焦点时在屏幕上任何别的地方按一下，或者键盘被收掉，焦点都会收掉（见 [LocalInputFocus]）。
+ * 有焦点时在屏幕上任何别的地方按一下，或者键盘被收掉，焦点都会收掉（见 [LocalInputFocus]）；
+ * 右下角的动作按钮（发送、话筒、停止）算框里：按了键盘还在，接着打下一句。
+ *
+ * 键盘上的回车是「发送」（同右下角那颗，发不了的时候按了没反应）；要换行按着 Shift 再按回车。
+ * 软键盘：框是多行、动作是发送，换行键怎么出来看输入法——Gboard / AOSP 按下 Shift 回车键变回换行，
+ * 微信输入法 Shift 下仍是发送、长按发送键才换行（小米 17 上实测）。实体键盘在下面自己拦回车。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -147,6 +163,26 @@ fun Composer(
     }
     val shape = RoundedCornerShape(22.dp)
 
+    // 现在能不能发：跟右下角 [Actions] 摆不摆发送键一个条件（在跑时一直能补充 / 插话；没在跑、在听写时只有话筒，先不发）
+    val listening = voice?.listening == true
+    val sendable = enabled && canSend && !busy && (onStop != null || !listening)
+    val send = { if (sendable) onSend() }
+
+    // 框里的字和光标。外面改了字（语音写进来、发完清空、换到别的会话的草稿）光标放到最后：
+    // 点发送 / 话筒不收焦点了，接着打的字要接在后面，不是插回原来那个位置
+    var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    val shown = if (field.text == value) field else TextFieldValue(value, TextRange(value.length))
+    SideEffect { if (shown !== field) field = shown }
+
+    // 实体键盘的 Shift+回车：在光标处换行（选着字就替换掉）。Compose 自己的按键处理里 Shift+回车什么都不做，这里补上
+    fun newline() {
+        val current = field
+        val start = current.selection.min
+        val text = current.text.replaceRange(start, current.selection.max, "\n")
+        field = TextFieldValue(text, TextRange(start + 1))
+        onValueChange(text)
+    }
+
     Column(
         modifier
             .fillMaxWidth()
@@ -162,10 +198,17 @@ fun Composer(
                 .border(1.dp, borderColor, shape),
         ) {
             BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
+                value = shown,
+                onValueChange = { next ->
+                    val changed = next.text != field.text
+                    field = next
+                    if (changed) onValueChange(next.text)
+                },
                 enabled = enabled,
                 maxLines = 6,
+                // 多行 + 动作是发送：软键盘的回车键显示成「发送」，换行交给输入法（Shift / 长按，见上面）
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { send() }),
                 interactionSource = interaction,
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = if (enabled) scheme.onSurface else scheme.onSurfaceVariant,
@@ -173,23 +216,19 @@ fun Composer(
                 cursorBrush = SolidColor(scheme.primary),
                 modifier = Modifier
                     .fillMaxWidth()
-                    // 按在框里（含四周留白）：标一下，外壳就不收焦点。Initial 阶段只看不吃，不影响框自己的点按 / 选字
-                    .then(
-                        if (inputFocus != null) {
-                            Modifier.pointerInput(inputFocus) {
-                                awaitPointerEventScope {
-                                    while (true) {
-                                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                                        if (event.changes.any { it.changedToDownIgnoreConsumed() }) {
-                                            inputFocus.touchedInside = true
-                                        }
-                                    }
-                                }
+                    // 按在框里（含四周留白）：外壳不收焦点
+                    .keepsInputFocus(inputFocus)
+                    // 实体键盘（和直接发回车键码的输入法）：回车 = 发送（按住不连发），Shift+回车换行
+                    .onPreviewKeyEvent { event ->
+                        if (event.key != Key.Enter && event.key != Key.NumPadEnter) return@onPreviewKeyEvent false
+                        if (event.type == KeyEventType.KeyDown) {
+                            when {
+                                event.isShiftPressed -> newline()
+                                event.nativeKeyEvent.repeatCount == 0 -> send()
                             }
-                        } else {
-                            Modifier
                         }
-                    )
+                        true
+                    }
                     .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
                 decorationBox = { inner ->
                     Box {
@@ -237,6 +276,8 @@ fun Composer(
                 )
                 Spacer(Modifier.width(6.dp))
                 Actions(
+                    // 发送、话筒、停止：按了不收焦点，键盘留着接着打
+                    modifier = Modifier.keepsInputFocus(inputFocus),
                     enabled = enabled,
                     canSend = canSend,
                     busy = busy,
@@ -257,8 +298,27 @@ enum class RunningSend(val description: String) {
     Supplement("补充给智能体"),
 }
 
+/**
+ * 按在这块上不算「点在外面」：标一下，外壳（[HomeScaffold]）就不收输入框的焦点、键盘留着。
+ * Initial 阶段只看不吃，不影响这块自己的点按 / 选字。
+ */
+private fun Modifier.keepsInputFocus(inputFocus: InputFocusTracker?): Modifier =
+    if (inputFocus == null) {
+        this
+    } else {
+        pointerInput(inputFocus) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    if (event.changes.any { it.changedToDownIgnoreConsumed() }) inputFocus.touchedInside = true
+                }
+            }
+        }
+    }
+
 @Composable
 private fun Actions(
+    modifier: Modifier,
     enabled: Boolean,
     canSend: Boolean,
     busy: Boolean,
@@ -270,7 +330,7 @@ private fun Actions(
 ) {
     val scheme = MaterialTheme.colorScheme
     val listening = voice?.listening == true
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         when {
             onStop != null -> {
                 if (listening) MicButton(voice!!, enabled)

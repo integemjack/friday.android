@@ -31,6 +31,20 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotFocused
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.performImeAction
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.withKeyDown
+import androidx.compose.ui.text.input.ImeAction
 import androidx.test.core.app.ApplicationProvider
 import com.integemjack.friday.AppModel
 import com.integemjack.friday.proto.ChatMessage
@@ -1558,5 +1572,102 @@ class UiRenderTest {
         assertNoText("账号（用户名 / 手机号）")
         assertNoText("刷新列表")
         assertNoText("断开工作通道")
+    }
+
+    // MARK: 输入框的焦点和回车
+
+    /** 主外壳 + 共用的输入框（字放在 [text]），页面中间一块「页面内容」用来点框外面 */
+    private fun renderComposer(
+        text: androidx.compose.runtime.MutableState<String>,
+        sent: MutableList<String>,
+        voice: VoiceInput? = null,
+    ) = render(modelWith(FridayState(conn = connected))) {
+        HomeScaffold(
+            tab = HomeTabs.ASSISTANT,
+            onTab = {},
+            dock = {
+                Composer(
+                    value = text.value,
+                    onValueChange = { text.value = it },
+                    placeholder = "说点什么",
+                    onSend = { sent += text.value; text.value = "" },
+                    voice = voice,
+                )
+            },
+            sessions = {},
+        ) {
+            androidx.compose.material3.Text(
+                "页面内容",
+                androidx.compose.ui.Modifier.fillMaxSize(),
+            )
+        }
+    }
+
+    @Test
+    fun `输入框按发送、话筒不丢焦点，点框外面才收`() {
+        val text = mutableStateOf("")
+        val sent = mutableListOf<String>()
+        var toggled = 0
+        renderComposer(text, sent, voice = VoiceInput { toggled++ })
+        val field = compose.onNode(hasSetTextAction())
+        field.performClick()
+        field.assertIsFocused()
+
+        compose.onNodeWithContentDescription("语音输入").performClick()
+        assertEquals(1, toggled)
+        field.assertIsFocused()
+
+        field.performTextInput("你好")
+        compose.onNodeWithContentDescription("发送").performClick()
+        assertEquals(listOf("你好"), sent)
+        field.assertIsFocused()
+
+        // 点在框外面：照旧收焦点
+        compose.onNodeWithText("页面内容").performClick()
+        field.assertIsNotFocused()
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun `键盘回车是发送，按着 Shift 才换行`() {
+        val text = mutableStateOf("")
+        val sent = mutableListOf<String>()
+        renderComposer(text, sent)
+        val field = compose.onNode(hasSetTextAction())
+        // 软键盘：多行框、回车键的动作是发送
+        field.assert(SemanticsMatcher.expectValue(SemanticsProperties.ImeAction, ImeAction.Send))
+        field.performClick()
+
+        // 空着按发送：没反应
+        field.performImeAction()
+        assertTrue(sent.isEmpty())
+
+        field.performTextInput("第一句")
+        field.performImeAction()
+        assertEquals(listOf("第一句"), sent)
+        field.assertIsFocused()
+
+        // 实体键盘：Shift+回车换行，回车发送
+        field.performTextInput("第一行")
+        field.performKeyInput { withKeyDown(Key.ShiftLeft) { pressKey(Key.Enter) } }
+        field.performTextInput("第二行")
+        assertEquals("第一行\n第二行", text.value)
+        field.performKeyInput { pressKey(Key.Enter) }
+        assertEquals(listOf("第一句", "第一行\n第二行"), sent)
+        assertEquals("", text.value)
+        field.assertIsFocused()
+    }
+
+    @Test
+    fun `外面写进框里的字（语音）光标放到最后，接着打的接在后面`() {
+        val text = mutableStateOf("")
+        renderComposer(text, mutableListOf())
+        val field = compose.onNode(hasSetTextAction())
+        field.performClick()
+        field.performTextInput("你好")
+        text.value = "你好，今天天气"
+        compose.waitForIdle()
+        field.performTextInput("怎么样")
+        assertEquals("你好，今天天气怎么样", text.value)
     }
 }

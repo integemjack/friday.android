@@ -157,7 +157,8 @@ fun Modifier.fadeTopEdge(height: Dp = TopFadeHeight): Modifier = this
  * 输入框背后不垫底色：页面内容一直铺到屏幕底（导航条底下也是内容），
  * 输入框占掉的高度经 [LocalDockPadding] 交给各页的列表自己让。
  *
- * 输入框有焦点时，在屏幕上**任何地方**按下（滚列表、拉侧栏、点按钮……只要不是点在输入框里）就把焦点收掉、键盘收起。
+ * 输入框有焦点时，在屏幕上**任何地方**按下（滚列表、拉侧栏、点按钮……只要不是点在输入框里）就把焦点收掉、键盘收起；
+ * 输入框右下角的发送 / 话筒 / 停止键算框里，按了键盘留着。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
