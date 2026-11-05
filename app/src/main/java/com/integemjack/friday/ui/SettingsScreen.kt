@@ -238,8 +238,35 @@ private fun BackgroundCard() {
             )
             Spacer(Modifier.height(14.dp))
             SpeakRow()
+            Spacer(Modifier.height(14.dp))
+            IslandRow()
         }
     }
+}
+
+/** 灵动岛：「待确认」通知提升成实时活动（状态栏胶囊 / 小米超级岛），答完才消失；通知上直接答 */
+@Composable
+private fun IslandRow() {
+    val model = LocalAppModel.current
+    val island by model.settings.liveIsland.collectAsState()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("灵动岛", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+        androidx.compose.material3.Switch(
+            checked = island,
+            onCheckedChange = { model.settings.setLiveIsland(it) },
+        )
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        if (island) {
+            "在后台时有调用等你确认、Friday 在问你：状态栏的胶囊（小米是超级岛）写「在问你」「待确认」，答完才消失。" +
+                "展开通知直接点选项、批准 / 拒绝，或者「回答…」写一句（先解锁）。要 Android 16 以上，系统不支持时就是普通通知。"
+        } else {
+            "关着：普通通知，点开就消失；通知上的按钮照样能直接答。"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 /**

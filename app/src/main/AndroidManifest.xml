@@ -5,6 +5,8 @@
     <!-- 应用内自更新：下载 APK 后调起安装器（Android 8+ 需用户授予「安装未知应用」） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 「待确认」通知提升成实时活动（Android 16+ 状态栏胶囊 / 小米超级岛）：普通权限，装上就有 -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <!-- 输入框的语音键（听写）、跟助手打电话 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -70,6 +72,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the user's own WebRTC work channel to their remote Friday machine open so approval requests and assistant messages arrive while the app is in the background." />
         </service>
+
+        <!-- 「待确认」通知上的按钮（选项、回答…、批准、拒绝） -->
+        <receiver
+            android:name=".notify.AttentionActionReceiver"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

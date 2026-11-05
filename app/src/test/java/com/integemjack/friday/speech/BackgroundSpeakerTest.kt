@@ -40,7 +40,7 @@ class BackgroundSpeakerTest {
         ShadowTextToSpeech.reset()
         ShadowTextToSpeech.addLanguageAvailability(Locale.SIMPLIFIED_CHINESE)
         audio.ringerMode = AudioManager.RINGER_MODE_NORMAL
-        speaker = BackgroundSpeaker(app) { calling }
+        speaker = BackgroundSpeaker(app, inAssistantCall = { calling })
     }
 
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()

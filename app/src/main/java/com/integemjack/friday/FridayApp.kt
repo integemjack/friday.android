@@ -123,6 +123,27 @@ class AppModel(private val app: Application) {
     /** 后台语音播报：在后台时有调用等你确认，跟通知一起念一句 */
     val speaker = com.integemjack.friday.speech.BackgroundSpeaker(app, inAssistantCall = { call.state.value.inCall })
 
+    /** 「待确认」通知：灵动岛（实时活动）+ 通知上直接答 */
+    val attention = com.integemjack.friday.notify.AttentionNotifier(
+        app,
+        island = { settings.liveIsland.value },
+        pending = { com.integemjack.friday.speech.pendingApprovals(client.state.value.activities) },
+        resolve = { eventID, approved, answers, reply -> client.resolveApproval(eventID, approved, answers, reply) },
+        canNotify = { canNotify() },
+        contentIntent = { assistantTabIntent() },
+    )
+
+    /** 通知上的按钮点了（广播里调）：发给那台，最多等 9 秒（广播要在 10 秒内收尾） */
+    fun answerFromNotification(intent: Intent, done: () -> Unit) {
+        scope.launch {
+            try {
+                kotlinx.coroutines.withTimeoutOrNull(9_000) { attention.handle(intent) }
+            } finally {
+                done()
+            }
+        }
+    }
+
     /** 快照归哪个 SChat 账号（换账号不串） */
     private fun account(): Long = schat.state.value.userId.takeIf { it > 0 } ?: schatStore.load()?.userId ?: 0L
 
@@ -203,6 +224,13 @@ class AppModel(private val app: Application) {
                         notifyAttention()
                     }
                 }
+            }
+            // 等着的那几项变了（别处答了、activity 比 attention 晚到）：通知还在就跟着换 / 收掉
+            launch {
+                client.stateFlow
+                    .map { com.integemjack.friday.speech.pendingApprovals(it.activities) }
+                    .distinctUntilChanged()
+                    .collect { attention.onPendingChanged(it) }
             }
         }
     }
@@ -335,7 +363,8 @@ class AppModel(private val app: Application) {
         // App 在前台：界面里已经有提醒，不再弹系统通知、不念
         if (friday.inForeground) return
         val approvals = com.integemjack.friday.speech.pendingApprovals(client.state.value.activities)
-        val notified = canNotify() && postAttention(approvals)
+        // 通知（灵动岛 + 直接答）先发：提示音先响
+        val notified = attention.onAttention()
         // 语音播报跟通知开关无关（各管各的）；静音、勿扰、打电话时它自己不念。
         // 通知有提示音就等它响完再念（提示音也占音频焦点，一起响的话开头被压低）
         if (settings.speakInBackground.value) {
@@ -350,30 +379,5 @@ class AppModel(private val app: Application) {
     private fun attentionChimes(): Boolean {
         val channel = NotificationManagerCompat.from(app).getNotificationChannel(FridayApp.CHANNEL_ATTENTION) ?: return true
         return channel.importance >= NotificationManager.IMPORTANCE_DEFAULT && channel.sound != null
-    }
-
-    private fun postAttention(approvals: List<Pair<String, com.integemjack.friday.proto.PendingApproval>>): Boolean {
-        val (title, text) = when {
-            approvals.isEmpty() -> "Friday 等你确认" to "远程会话里有调用在等你批准或回答"
-            approvals.size == 1 -> {
-                val (session, approval) = approvals[0]
-                val head = if (approval.isQuestion) "Friday 在问你" else "Friday 等你确认"
-                val what = approval.title.ifBlank { approval.tool }
-                head to "${session.ifBlank { "会话" }}：$what"
-            }
-            else -> "Friday 等你确认（${approvals.size} 项）" to
-                approvals.joinToString("、") { (_, approval) -> approval.title.ifBlank { approval.tool } }.take(120)
-        }
-        val notification = NotificationCompat.Builder(app, FridayApp.CHANNEL_ATTENTION)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setContentIntent(assistantTabIntent())
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .build()
-        post(1002, notification)
-        return true
     }
 }

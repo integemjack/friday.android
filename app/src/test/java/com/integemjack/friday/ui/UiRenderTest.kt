@@ -1679,7 +1679,6 @@ class UiRenderTest {
         assertTrue(model.settings.speakInBackground.value)
 
         // 引擎起来了但不会说中文（假引擎没登记任何语言）
-        org.robolectric.shadows.ShadowTextToSpeech.reset()
         model.speaker.speak("试一下")
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
         val tts = org.robolectric.shadows.ShadowTextToSpeech.getLastTextToSpeechInstance()
@@ -1693,6 +1692,26 @@ class UiRenderTest {
         compose.runOnIdle { model.settings.setKeepAlive(false) }
         compose.waitForIdle()
         assertNoText("语音播报")
+    }
+
+    @Test
+    fun `设置里灵动岛开关默认开、点了记下；语音播报下面没有音色和语速`() {
+        val model = modelWith(FridayState(conn = connected))
+        render(model) { SettingsScreen() }
+        compose.onNodeWithText("灵动岛").performScrollTo().assertIsDisplayed()
+        assertTrue(model.settings.liveIsland.value)
+        val label = compose.onNodeWithText("灵动岛").getBoundsInRoot()
+        val toggles = compose.onAllNodes(androidx.compose.ui.test.isToggleable())
+        val row = (0 until toggles.fetchSemanticsNodes().size).single { i ->
+            val b = toggles[i].getBoundsInRoot()
+            b.top < label.bottom && b.bottom > label.top
+        }
+        toggles[row].performClick()
+        assertEquals(false, model.settings.liveIsland.value)
+        compose.onNodeWithText("关着：普通通知，点开就消失；通知上的按钮照样能直接答。").assertExists()
+
+        assertNoText("音色")
+        assertNoText("语速")
     }
 
     // MARK: 输入框的焦点和回车

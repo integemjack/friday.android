@@ -1094,17 +1094,27 @@ class FridayClient(
     suspend fun uploadFile(file: java.io.File, onProgress: (Float) -> Unit = {}): String =
         files().uploadFile(file, onProgress)
 
-    /** 批准 / 拒绝（或回答 ask_user） */
-    suspend fun resolveApproval(eventID: String, approved: Boolean, answers: List<String>? = null) {
-        val rpc = rpc ?: return
+    /**
+     * 批准 / 拒绝（或回答 ask_user：[answers] 每题一条——选项名，多选「、」连起来，空 = 没选；
+     * [reply] 是没点选项直接回的一句，ASK.md）。失败（没连上、那台已经不在等了）在返回值里
+     */
+    suspend fun resolveApproval(
+        eventID: String,
+        approved: Boolean,
+        answers: List<String>? = null,
+        reply: String? = null,
+    ): Result<Unit> {
+        val rpc = rpc ?: return Result.failure(Exception("没连上远程 Friday"))
         val params = buildJsonObject {
             put("eventID", eventID)
             put("approved", approved)
-            if (answers != null) put("answer", buildJsonObject {
-                put("answers", kotlinx.serialization.json.JsonArray(answers.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            if (answers != null || reply != null) put("answer", buildJsonObject {
+                put("answers", kotlinx.serialization.json.JsonArray(answers.orEmpty().map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                if (reply != null) put("reply", reply)
             })
         }
-        runCatching { rpc.request("runner.resolveApproval", params) }
+        val result = runCatching { rpc.request("runner.resolveApproval", params); Unit }
         refreshActivities()
+        return result
     }
 }

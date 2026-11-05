@@ -31,8 +31,19 @@ class AppSettings(private val prefs: SharedPreferences) {
         _speakInBackground.value = on
     }
 
+    private val _liveIsland = MutableStateFlow(prefs.getBoolean(KEY_LIVE_ISLAND, true))
+
+    /** 待确认的那条通知提升成实时活动（状态栏胶囊 / 小米超级岛），答完才消失；默认开 */
+    val liveIsland: StateFlow<Boolean> = _liveIsland.asStateFlow()
+
+    fun setLiveIsland(on: Boolean) {
+        prefs.edit().putBoolean(KEY_LIVE_ISLAND, on).apply()
+        _liveIsland.value = on
+    }
+
     private companion object {
         const val KEY_KEEP_ALIVE = "keepAlive"
         const val KEY_SPEAK_IN_BACKGROUND = "speakInBackground"
+        const val KEY_LIVE_ISLAND = "liveIsland"
     }
 }
