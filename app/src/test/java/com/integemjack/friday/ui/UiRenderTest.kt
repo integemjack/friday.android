@@ -1606,6 +1606,39 @@ class UiRenderTest {
     }
 
     @Test
+    fun `助手页连着的系统说明收成一行，只露最后一条，点开一条条看`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                assistant = reactingAssistant(reacting = false),
+                assistantEntries = listOf(
+                    journalEntry("u1", "user", "打个电话"),
+                    journalEntry("n2", "notice", "小F 连上了工作通道"),
+                    journalEntry("n3", "notice", "接通 小F 的电话"),
+                    journalEntry("n4", "notice", "通话结束 · 共 0 分 09 秒"),
+                    journalEntry("a5", "assistant", "刚才说到哪了"),
+                ),
+            )
+        )
+        render(model) { AssistantScreen() }
+
+        compose.onNodeWithText("通话结束 · 共 0 分 09 秒").assertIsDisplayed()
+        compose.onNodeWithText("等 3 条", substring = true).assertIsDisplayed()
+        assertNoText("接通 小F 的电话")
+        assertNoText("小F 连上了工作通道")
+
+        compose.onNodeWithText("等 3 条", substring = true).performClick()
+        compose.onNodeWithText("3 条系统消息").assertIsDisplayed()
+        compose.onNodeWithText("小F 连上了工作通道").assertIsDisplayed()
+        compose.onNodeWithText("接通 小F 的电话").assertIsDisplayed()
+        compose.onNodeWithText("通话结束 · 共 0 分 09 秒").assertIsDisplayed()
+
+        compose.onNodeWithText("3 条系统消息").performClick()
+        assertNoText("接通 小F 的电话")
+        compose.onNodeWithText("等 3 条", substring = true).assertIsDisplayed()
+    }
+
+    @Test
     fun `离线点开会话看存下来的内容，输入框说清楚现在不能发`() {
         val model = modelWith(FridayState(conn = ConnState.Disconnected, summaries = listOf(offlineSummary)))
         val cached = chatState(listOf(message("1", "assistant", listOf(textBlock("b1", "上次的回答")))))

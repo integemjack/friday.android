@@ -74,14 +74,32 @@ class BlockGroupsTest {
             journal("t5", "tool", "say"), journal("t6", "tool", "say"),
         )
         val items = groupJournal(entries, dayStarts = setOf("u", "t6"))
-        val shape = items.joinToString(" ") { item ->
-            when (item) {
-                is JournalItem.Single -> item.entry.id
-                is JournalItem.Tools -> item.entries.joinToString(",", "[", "]") { it.id }
-            }
-        }
-        assertEquals("u [t1,t2,t3] a [t4,t5] t6", shape)
+        assertEquals("u [t1,t2,t3] a [t4,t5] t6", journalShape(items))
         assertEquals("search_memory ×2、say", (items[1] as JournalItem.Tools).kinds)
+    }
+
+    private fun journalShape(items: List<JournalItem>) = items.joinToString(" ") { item ->
+        when (item) {
+            is JournalItem.Single -> item.entry.id
+            is JournalItem.Tools -> item.entries.joinToString(",", "[", "]") { it.id }
+            is JournalItem.Notices -> item.entries.joinToString(",", "{", "}") { it.id }
+        }
+    }
+
+    @Test
+    fun `助手页连着的系统说明收成一行，跟工具分开收，一天的开头把它们隔开`() {
+        val entries = listOf(
+            journal("n1", "notice"), journal("n2", "notice"), journal("n3", "notice"),
+            journal("u", "user"),
+            journal("n4", "notice"),
+            journal("a", "assistant"),
+            // 说明和工具挨着：各收各的
+            journal("n5", "notice"), journal("n6", "notice"), journal("t1", "tool", "say"), journal("t2", "tool", "say"),
+            journal("n7", "notice"), journal("n8", "notice"),
+        )
+        val items = groupJournal(entries, dayStarts = setOf("n1", "n8"))
+        assertEquals("{n1,n2,n3} u n4 a {n5,n6} [t1,t2] n7 n8", journalShape(items))
+        assertEquals("notices:n1", items.first().key)
     }
 
     @Test

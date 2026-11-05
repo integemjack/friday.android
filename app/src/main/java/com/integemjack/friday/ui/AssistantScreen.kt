@@ -69,7 +69,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -118,12 +117,16 @@ fun AssistantScreen(
     // 连着的工具调用收成一行（一天的开头隔开）
     val timeline = remember(entries, dayStarts) { groupJournal(entries, dayStarts) }
     // 时间线从上往下排（同会话页）：点开工具时那一行留在原地往下长，不再一跳一跳。
-    // 一打开就停在最底下（最后一项、偏移给到很大）；日志第一次到手时重建一份，第一帧就在底下
-    val listState = rememberSaveable(timeline.isEmpty(), saver = LazyListState.Saver) {
+    // 一打开就停在最底下（最后一项、偏移给到很大）；日志第一次到手时重建一份，第一帧就在底下。
+    // 不存滚动位置（不用 rememberSaveable）：Activity 重建（被系统收掉后再打开）时恢复旧位置，
+    // 日志已经换过一份，那个位置是半中间
+    val listState = remember(timeline.isEmpty()) {
         LazyListState((timeline.size - 1).coerceAtLeast(0), LIST_END_OFFSET)
     }
     // 贴底跟随：在最底下时来了新的、回复流式变长就跟到底；往上翻了、点开了什么，就不跟（FollowBottom.kt）
     val follow = rememberFollowBottom(listState, Unit)
+    // 打开 App（从后台切回来、Activity 重建）：回到最新、接着跟底，上次翻到哪儿不留着
+    FollowBottomOnStart(listState, follow)
     var sayError by remember { mutableStateOf<String?>(null) }
     // 你说完话、它在想还没出字：最底下一行「思考中…」（离线时摆的是存下来的，不算）
     val thinkingPending = state.connected && assistantThinkingPending(state)
@@ -262,6 +265,7 @@ fun AssistantScreen(
                                 if (item.first.id in dayStarts) DayDivider(item.first.at)
                                 when (item) {
                                     is JournalItem.Tools -> ToolGroupRow(item)
+                                    is JournalItem.Notices -> NoticeGroupRow(item)
                                     is JournalItem.Single -> EntryRow(
                                         entry = item.entry,
                                         onOpenSession = onOpenSession,
@@ -619,6 +623,65 @@ private fun NoticeRow(entry: JournalEntry) {
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+/**
+ * 连着的系统说明（连上工作通道、接通电话、通话结束……）收成一行居中小字：
+ * 「通话结束 · 共 0 分 09 秒 等 3 条 ›」，只露最后一条；点开一行一条（同 [NoticeRow]），那一行留在原地、往下长
+ */
+@Composable
+private fun NoticeGroupRow(group: JournalItem.Notices) {
+    var expanded by remember(group.key) { mutableStateOf(false) }
+    val holdPosition = rememberHoldPosition()
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val count = group.entries.size
+    Column(Modifier.fillMaxWidth().animateContentSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClickLabel = if (expanded) "收起" else "展开") {
+                    holdPosition()
+                    expanded = !expanded
+                }
+                .padding(vertical = 2.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Campaign,
+                contentDescription = null,
+                tint = muted.copy(alpha = 0.6f),
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            if (expanded) {
+                Text("$count 条系统消息", style = MaterialTheme.typography.labelSmall, color = muted)
+            } else {
+                // 最后一条太长时省略它，「等 N 条」留着
+                Text(
+                    group.entries.last().text,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Text(" 等 $count 条", style = MaterialTheme.typography.labelSmall, color = muted)
+            }
+            Icon(
+                Icons.Filled.ChevronRight,
+                contentDescription = null,
+                tint = muted.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .size(14.dp)
+                    .graphicsLayer { if (expanded) rotationZ = 90f },
+            )
+        }
+        if (expanded) {
+            group.entries.forEach { entry -> key(entry.id) { NoticeRow(entry) } }
+        }
     }
 }
 

@@ -86,7 +86,7 @@ fun toolTitle(tool: ToolEvent): String = tool.title?.ifBlank { tool.name } ?: to
 
 // MARK: 助手页的日志
 
-/** 助手页一行：单独一条日志，或者收起来的一串连续的工具调用 */
+/** 助手页一行：单独一条日志，或者收起来的一串连续的工具调用 / 系统说明 */
 sealed interface JournalItem {
     val key: String
     val first: JournalEntry
@@ -108,23 +108,38 @@ sealed interface JournalItem {
                 return counts.entries.joinToString("、") { (name, n) -> if (n > 1) "$name ×$n" else name }
             }
     }
+
+    /** 连着的系统说明（连上工作通道、接通电话、通话结束……）：收起时只露最后一条 +「等 N 条」 */
+    data class Notices(val entries: List<JournalEntry>) : JournalItem {
+        override val key: String get() = "notices:" + entries.first().id
+        override val first: JournalEntry get() = entries.first()
+    }
 }
 
 fun journalToolName(entry: JournalEntry): String = entry.tool?.name?.takeIf { it.isNotBlank() } ?: entry.text
 
-/** 连着两条以上的工具调用收成一行；一天的开头（[dayStarts]，上面要画日期）把它们隔开 */
+/**
+ * 连着两条以上的工具调用、两条以上的系统说明（notice）各收成一行；
+ * 一天的开头（[dayStarts]，上面要画日期）把它们隔开
+ */
 fun groupJournal(entries: List<JournalEntry>, dayStarts: Set<String>): List<JournalItem> {
     val out = ArrayList<JournalItem>(entries.size)
     var i = 0
     while (i < entries.size) {
-        if (entries[i].kind != "tool") {
+        val kind = entries[i].kind
+        if (kind != "tool" && kind != "notice") {
             out += JournalItem.Single(entries[i])
             i++
             continue
         }
         var j = i + 1
-        while (j < entries.size && entries[j].kind == "tool" && entries[j].id !in dayStarts) j++
-        out += if (j - i >= 2) JournalItem.Tools(entries.subList(i, j).toList()) else JournalItem.Single(entries[i])
+        while (j < entries.size && entries[j].kind == kind && entries[j].id !in dayStarts) j++
+        val run = entries.subList(i, j).toList()
+        out += when {
+            run.size < 2 -> JournalItem.Single(entries[i])
+            kind == "tool" -> JournalItem.Tools(run)
+            else -> JournalItem.Notices(run)
+        }
         i = j
     }
     return out
