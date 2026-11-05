@@ -700,6 +700,12 @@ data class JournalEntry(
     val silent: Boolean get() = data?.bool("silent") ?: false
     val error: String? get() = if (kind == "assistant") data?.str("error") else null
 
+    /**
+     * 助手回复的思考（`data.thinking`：大脑开了深度思考时 `<think>` 里的那段，流式时跟着长）。
+     * 主机到 Friday 533f4f60 为止还不发：思考在主机上就剥掉了（withoutThinking），这时是 null，界面上只有「思考中…」
+     */
+    val thinking: String? get() = if (kind == "assistant") data?.str("thinking")?.takeIf { it.isNotBlank() } else null
+
     companion object {
         fun fromJson(o: JsonObject): JournalEntry = JournalEntry(
             id = o.str("id") ?: "",

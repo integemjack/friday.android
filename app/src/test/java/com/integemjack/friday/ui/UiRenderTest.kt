@@ -1471,6 +1471,140 @@ class UiRenderTest {
         assertTrue("没贴着输入框：中间空了 ${input.top - last.bottom}", input.top - last.bottom < 80.dp)
     }
 
+    // MARK: 助手页「思考中…」
+
+    private fun reactingAssistant(reacting: Boolean, entryID: String? = null, thinking: Boolean = false) =
+        AssistantState.fromJson(buildJsonObject {
+            put("enabled", true)
+            put("reacting", reacting)
+            entryID?.let { put("reactingEntryID", it) }
+            put("config", buildJsonObject { put("name", "小F"); put("brainThinking", thinking) })
+        })
+
+    private fun reply(id: String, text: String, streaming: Boolean, thinking: String? = null) =
+        com.integemjack.friday.proto.JournalEntry(
+            id, "2026-01-01T00:00:59Z", "assistant", null, text, emptyList(), false, streaming,
+            thinking?.let { buildJsonObject { put("thinking", it) } },
+        )
+
+    @Test
+    fun `跟助手说完话、它还没出字时最底下一行思考中，出字了就收`() {
+        val said = journalEntry("u1", "user", "帮我看看明天的安排")
+        val waiting = FridayState(
+            conn = connected,
+            assistant = reactingAssistant(reacting = true, entryID = "a9"),
+            assistantEntries = listOf(said),
+        )
+        val model = modelWith(waiting)
+        render(model) { AssistantScreen() }
+
+        compose.onNodeWithText("思考中…").assertIsDisplayed()
+        // 在你那句话下面
+        val bubble = compose.onNodeWithText("帮我看看明天的安排").getBoundsInRoot()
+        assertTrue("思考中应该在你那句下面", compose.onNodeWithText("思考中…").getBoundsInRoot().top >= bubble.bottom)
+
+        // 出字了：收掉，那条自己写着「在说…」
+        model.client.state.value = waiting.copy(assistantEntries = listOf(said, reply("a9", "明天上午 9 点开会", streaming = true)))
+        compose.waitForIdle()
+        compose.onNodeWithText("明天上午 9 点开会").assertIsDisplayed()
+        compose.onNodeWithText("在说…").assertIsDisplayed()
+        assertNoText("思考中…")
+    }
+
+    @Test
+    fun `刚说完它还没开始反应也先显示思考中；这一轮没话说、反应完了就收`() {
+        val said = journalEntry("u1", "user", "在吗")
+        val sent = FridayState(
+            conn = connected,
+            assistant = reactingAssistant(reacting = false),
+            assistantEntries = listOf(said),
+            assistantAwaiting = true,
+        )
+        val model = modelWith(sent)
+        render(model) { AssistantScreen() }
+        compose.onNodeWithText("思考中…").assertIsDisplayed()
+
+        // 开始反应：照样显示
+        model.client.state.value = sent.copy(assistant = reactingAssistant(reacting = true, entryID = "a9"), assistantAwaiting = false)
+        compose.waitForIdle()
+        compose.onNodeWithText("思考中…").assertIsDisplayed()
+
+        // 反应完了、没出字（不说）：收掉
+        model.client.state.value = sent.copy(assistant = reactingAssistant(reacting = false), assistantAwaiting = false)
+        compose.waitForIdle()
+        assertNoText("思考中…")
+    }
+
+    @Test
+    fun `开了深度思考：回复那条带着思考时思考中能点开看，出字后收成一行思考`() {
+        val said = journalEntry("u1", "user", "明天几点开会")
+        val thinking = FridayState(
+            conn = connected,
+            assistant = reactingAssistant(reacting = true, entryID = "a9", thinking = true),
+            assistantEntries = listOf(said, reply("a9", "", streaming = true, thinking = "先查一下日程")),
+        )
+        val model = modelWith(thinking)
+        render(model) { AssistantScreen() }
+
+        // 只一行（那条自己的），底下不再重一行；还没出字时不写时间和「在说…」
+        assertEquals(1, compose.onAllNodesWithText("思考中…").fetchSemanticsNodes().size)
+        assertNoText("在说…")
+        assertNoText("先查一下日程")
+        compose.onNodeWithText("思考中…").performClick()
+        compose.onNodeWithText("先查一下日程").assertIsDisplayed()
+        compose.onNodeWithText("思考中 ▾").assertIsDisplayed()
+
+        // 想得更多了：点开着的跟着长
+        model.client.state.value = thinking.copy(
+            assistantEntries = listOf(said, reply("a9", "", streaming = true, thinking = "先查一下日程\n明天上午有一个会")),
+        )
+        compose.waitForIdle()
+        compose.onNodeWithText("先查一下日程\n明天上午有一个会").assertIsDisplayed()
+
+        // 出字了、说完了：思考收成一行「思考」（还是点开着），下面是回复
+        model.client.state.value = thinking.copy(
+            assistant = reactingAssistant(reacting = false, thinking = true),
+            assistantEntries = listOf(said, reply("a9", "明天上午 9 点开会", streaming = false, thinking = "先查一下日程\n明天上午有一个会")),
+        )
+        compose.waitForIdle()
+        assertNoText("思考中…")
+        compose.onNodeWithText("思考 ▾").assertIsDisplayed()
+        compose.onNodeWithText("明天上午 9 点开会").assertIsDisplayed()
+        compose.onNodeWithText("思考 ▾").performClick()
+        compose.onNodeWithText("思考 …").assertIsDisplayed()
+        assertNoText("先查一下日程\n明天上午有一个会")
+    }
+
+    @Test
+    fun `没开深度思考的思考中只是一行，点了也不展开`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                assistant = reactingAssistant(reacting = true, entryID = "a9"),
+                assistantEntries = listOf(journalEntry("u1", "user", "在吗")),
+            )
+        )
+        render(model) { AssistantScreen() }
+        compose.onNodeWithText("思考中…").performClick()
+        compose.onNodeWithText("思考中…").assertIsDisplayed()
+        assertNoText("思考中 ▾")
+    }
+
+    @Test
+    fun `离线时摆的是存下来的，不显示思考中`() {
+        val model = modelWith(
+            FridayState(
+                conn = ConnState.Disconnected,
+                assistant = reactingAssistant(reacting = true, entryID = "a9"),
+                assistantEntries = listOf(journalEntry("u1", "user", "在吗")),
+                cachedAt = System.currentTimeMillis(),
+            )
+        )
+        render(model) { AssistantScreen() }
+        compose.onNodeWithText("在吗").assertExists()
+        assertNoText("思考中…")
+    }
+
     @Test
     fun `离线点开会话看存下来的内容，输入框说清楚现在不能发`() {
         val model = modelWith(FridayState(conn = ConnState.Disconnected, summaries = listOf(offlineSummary)))

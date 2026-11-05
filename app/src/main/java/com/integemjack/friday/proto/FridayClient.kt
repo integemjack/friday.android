@@ -93,6 +93,11 @@ data class FridayState(
     val assistantHasOlder: Boolean = false,
     val assistantLoading: Boolean = false,
     val assistantError: String? = null,
+    /**
+     * 刚对助手说了话（assistant.say 回来了）、它还没开始反应：助手页先摆上「思考中…」，
+     * 不等 assistant.state 的 reacting。它开始反应 / 反应完了、回复或说明到了、等了一阵还没动静，就收
+     */
+    val assistantAwaiting: Boolean = false,
     /** 这台机器上的引擎（输入框的模型选择器列这些；关掉的服务的不列） */
     val engines: List<EngineInfo> = emptyList(),
     /** 新对话默认用的引擎（engineID 空的会话跟着它） */
@@ -410,7 +415,12 @@ class FridayClient(
             }
             "assistant.state" -> {
                 val s = (params["state"] as? JsonObject) ?: params
-                state.value = state.value.copy(assistant = AssistantState.fromJson(s))
+                val next = AssistantState.fromJson(s)
+                val current = state.value
+                state.value = current.copy(
+                    assistant = next,
+                    assistantAwaiting = awaitingAfterState(current.assistantAwaiting, current.assistant, next),
+                )
             }
             "assistant.entry" -> applyAssistantEntry((params["entry"] as? JsonObject)?.let { JournalEntry.fromJson(it) })
             "assistant.board" -> {
@@ -423,7 +433,7 @@ class FridayClient(
                 } ?: emptyList(),
             )
             "assistant.reset" -> state.value = state.value.copy(
-                assistantEntries = emptyList(), assistantHasOlder = false,
+                assistantEntries = emptyList(), assistantHasOlder = false, assistantAwaiting = false,
             )
             "conversation" -> applyConversation(params)
             "message" -> applyMessage(params, patch = false)
@@ -789,10 +799,24 @@ class FridayClient(
      */
     suspend fun sayToAssistant(text: String, attachments: List<String> = emptyList()) {
         val rpc = rpc ?: throw Exception("未连接")
-        rpc.request("assistant.say", buildJsonObject {
+        val result = rpc.request("assistant.say", buildJsonObject {
             put("text", text)
             if (attachments.isNotEmpty()) put("attachments", JsonArray(attachments.map { JsonPrimitive(it) }))
         })
+        val said = ((result as? JsonObject)?.get("entry") as? JsonObject)?.let { JournalEntry.fromJson(it) }
+        if (expectsAssistantReply(text, said, state.value.assistant)) awaitAssistantReply()
+    }
+
+    private var awaitJob: Job? = null
+
+    /** 说完话先摆上「思考中…」；它一直没开始反应（主机忙别的、没接上大脑……）就别一直挂着 */
+    private fun awaitAssistantReply() {
+        state.value = state.value.copy(assistantAwaiting = true)
+        awaitJob?.cancel()
+        awaitJob = scope.launch {
+            delay(ASSISTANT_AWAIT_MS)
+            state.value = state.value.copy(assistantAwaiting = false)
+        }
     }
 
     /**
@@ -862,10 +886,14 @@ class FridayClient(
     /** 日志加了一条 / 改了同一条（流式的回复按 id 合并，80 毫秒一批） */
     private fun applyAssistantEntry(entry: JournalEntry?) {
         if (entry == null || entry.id.isEmpty()) return
-        val list = state.value.assistantEntries.toMutableList()
+        val current = state.value
+        val list = current.assistantEntries.toMutableList()
         val index = list.indexOfFirst { it.id == entry.id }
         if (index >= 0) list[index] = entry else list.add(entry)
-        state.value = state.value.copy(assistantEntries = list.sortedBy { it.at })
+        state.value = current.copy(
+            assistantEntries = list.sortedBy { it.at },
+            assistantAwaiting = current.assistantAwaiting && !(index < 0 && answersAwaiting(entry)),
+        )
     }
 
     // MARK: 输入框底行：模型 / 任务模式 / 思考模式（REMOTE.md §6 runner.setEngine / setTeamMode / setThinking）

@@ -47,6 +47,7 @@ import kotlinx.serialization.json.put
  *   chat          聊天页（文本 / 思考 / 工具卡 / 排队 / 分支）
  *   chat-running  聊天页（生成中：转圈 + 跑着的工具卡）
  *   assistant     助手页（时间线：用户 / 助手 / 工具 / 回执 / 说明 + 状态板 + 渠道）
+ *   assistant-thinking 助手页（你刚说完话、它开着深度思考在想、还没出字：「思考中…」能点开）
  *   assistant-off 助手页（还没打开那个样子）
  *   assistant-call 跟助手视频通话的那一页（接通中）
  *   settings      设置页
@@ -93,14 +94,18 @@ object DemoData {
         ),
         activities = activities,
         assistant = if (scene.startsWith("assistant") || scene == "settings") {
-            assistantState(enabled = scene != "assistant-off")
+            assistantState(enabled = scene != "assistant-off", reactingEntryID = if (scene == "assistant-thinking") "e12" else "e7")
         } else {
             null
         },
-        assistantEntries = if (scene == "assistant") assistantEntries else emptyList(),
+        assistantEntries = when (scene) {
+            "assistant" -> assistantEntries
+            "assistant-thinking" -> thinkingEntries
+            else -> emptyList()
+        },
         assistantBoard = if (scene.startsWith("assistant") || scene == "settings") assistantBoard else null,
         assistantChannels = if (scene.startsWith("assistant") || scene == "settings") assistantChannels else emptyList(),
-        assistantHasOlder = scene == "assistant",
+        assistantHasOlder = scene == "assistant" || scene == "assistant-thinking",
         openConversationId = if (scene.startsWith("chat")) CHAT_ID else null,
         // 输入框工具行的模型 / 任务模式选择器
         engines = engines,
@@ -465,10 +470,10 @@ object DemoData {
 
     // MARK: 助手页
 
-    private fun assistantState(enabled: Boolean) = AssistantState(
+    private fun assistantState(enabled: Boolean, reactingEntryID: String) = AssistantState(
         enabled = enabled,
         reacting = enabled,
-        reactingEntryID = if (enabled) "e7" else null,
+        reactingEntryID = if (enabled) reactingEntryID else null,
         config = AssistantConfig(
             enabled = enabled,
             name = "Friday 个人助理",
@@ -622,6 +627,22 @@ object DemoData {
                 put("status", "running")
                 put("event", "approval.resolved")
                 put("brief", "只删截图，不动仓库里的 build 缓存")
+            },
+        ),
+    )
+
+    /** assistant-thinking：前面一样，最后你刚说了一句、它开着深度思考在想（回复那条只有思考、还没出字） */
+    private val thinkingEntries = assistantEntries.map { if (it.id == "e7") it.copy(streaming = false) else it } + listOf(
+        entry(
+            "e11", "2026-11-03T20:30:00Z", "user",
+            "明天的安排帮我理一下，下午留两个小时写代码",
+        ),
+        entry(
+            "e12", "2026-11-03T20:30:02Z", "assistant", "",
+            streaming = true,
+            data = buildJsonObject {
+                put("thinking", "先看明天日历上已经有的：上午 9 点周会、11 点和设计对稿。下午空着，" +
+                    "那就 14:00–16:00 整块留给写代码，提醒放在 13:50…")
             },
         ),
     )

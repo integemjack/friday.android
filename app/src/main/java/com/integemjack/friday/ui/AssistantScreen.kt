@@ -82,6 +82,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.graphics.graphicsLayer
 import com.integemjack.friday.proto.JournalEntry
+import com.integemjack.friday.proto.assistantThinkingPending
 import com.integemjack.friday.ui.theme.LocalFridayExtra
 import java.time.Instant
 import java.time.ZoneId
@@ -124,6 +125,8 @@ fun AssistantScreen(
     // 贴底跟随：在最底下时来了新的、回复流式变长就跟到底；往上翻了、点开了什么，就不跟（FollowBottom.kt）
     val follow = rememberFollowBottom(listState, Unit)
     var sayError by remember { mutableStateOf<String?>(null) }
+    // 你说完话、它在想还没出字：最底下一行「思考中…」（离线时摆的是存下来的，不算）
+    val thinkingPending = state.connected && assistantThinkingPending(state)
 
     // 进这页才订助手（assistant.subscribe），离开退订：日志和状态板的事件量不小
     LaunchedEffect(state.connected) {
@@ -245,7 +248,7 @@ fun AssistantScreen(
                                 }
                             }
                         }
-                        if (timeline.isEmpty() && !state.assistantLoading) {
+                        if (timeline.isEmpty() && !state.assistantLoading && !thinkingPending) {
                             item(key = "friday.ui:empty") {
                                 EmptyState(
                                     icon = Icons.Filled.SelfImprovement,
@@ -271,6 +274,10 @@ fun AssistantScreen(
                                 }
                             }
                         }
+                        // 「思考中…」在最底下：回复一出字（或这一轮没话说、反应完了）就收
+                        if (thinkingPending) {
+                            item(key = THINKING_KEY) { ThinkingBlock(content = "", active = true) }
+                        }
                     }
                     }
                 }
@@ -287,6 +294,9 @@ fun AssistantScreen(
         )
     }
 }
+
+/** 时间线最底下「思考中…」那一项的 key（日志 id 是主机给的，不会撞上这个） */
+private const val THINKING_KEY = "friday.ui:thinking"
 
 // MARK: 条目
 
@@ -336,11 +346,20 @@ private fun UserRow(entry: JournalEntry) {
 
 /**
  * 助手的回复：不包卡片、不要「助手」那行抬头，字直接铺满整行（同会话页的智能体回复），
- * 下面一行小字是时间和「在说…」/「被打断」
+ * 下面一行小字是时间和「在说…」/「被打断」。
+ *
+ * 带着思考的（data.thinking，大脑开了深度思考）上面一行「思考 …」，点开看；还在想、没出字时
+ * 那一行是「思考中…」（一样能点开、跟着长），时间那行等出字了再写
  */
 @Composable
 private fun AssistantRow(entry: JournalEntry) {
+    val thinking = entry.thinking
+    val thinkingNow = entry.streaming && entry.text.isBlank() && entry.error == null
+    // 还在想、也没有思考可看：底下那行「思考中…」替它显示（assistantThinkingPending）
+    if (thinkingNow && thinking == null) return
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (thinking != null) ThinkingBlock(thinking, active = thinkingNow)
+        if (thinkingNow) return@Column
         if (entry.text.isNotBlank()) Text(entry.text, style = MaterialTheme.typography.bodyMedium)
         entry.error?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)

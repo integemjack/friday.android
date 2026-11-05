@@ -755,9 +755,13 @@ fun BlockView(block: MessageBlock, workingDirectory: String? = null) {
     }
 }
 
-/** 思考：默认只一行「思考 …」（没有底色），点开在下面露出内容，左边一道竖线 */
+/**
+ * 思考：默认只一行「思考 …」（没有底色），点开在下面露出内容，左边一道竖线。
+ * [active] = 还在想、正文还没出来：这一行是转圈 +「思考中…」；有思考内容时一样能点开看（跟着长），
+ * 没有内容（没开深度思考、主机不给思考）就只是一行「思考中…」
+ */
 @Composable
-private fun ThinkingBlock(content: String) {
+internal fun ThinkingBlock(content: String, active: Boolean = false) {
     var expanded by remember { mutableStateOf(false) }
     // 点开时「思考」这一行留在原地，内容往下长；收起时往上收
     val holdPosition = rememberHoldPosition()
@@ -767,22 +771,31 @@ private fun ThinkingBlock(content: String) {
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(6.dp))
-                .clickable {
+                .clickable(enabled = !active || content.isNotBlank()) {
                     holdPosition()
                     expanded = !expanded
                 }
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.Filled.Psychology,
-                contentDescription = null,
-                tint = muted.copy(alpha = 0.8f),
-                modifier = Modifier.size(14.dp),
-            )
+            if (active) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(
+                    Icons.Filled.Psychology,
+                    contentDescription = null,
+                    tint = muted.copy(alpha = 0.8f),
+                    modifier = Modifier.size(14.dp),
+                )
+            }
             Spacer(Modifier.width(LineIndent - 14.dp))
             Text(
-                if (expanded) "思考 ▾" else "思考 …",
+                when {
+                    active && expanded && content.isNotBlank() -> "思考中 ▾"
+                    active -> "思考中…"
+                    expanded -> "思考 ▾"
+                    else -> "思考 …"
+                },
                 style = MaterialTheme.typography.labelMedium,
                 color = muted,
             )
