@@ -236,7 +236,58 @@ private fun BackgroundCard() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.height(14.dp))
+            SpeakRow()
         }
+    }
+}
+
+/**
+ * 后台语音播报（在「后台保持连接」开着时才有：进程活着才念得出来）。
+ * 「试听」不管静音 / 勿扰，顺便把引擎起一次：不会说中文、没有引擎就在这里写出来
+ */
+@Composable
+private fun SpeakRow() {
+    val context = LocalContext.current
+    val model = LocalAppModel.current
+    val speak by model.settings.speakInBackground.collectAsState()
+    val engine by model.speaker.engine.collectAsState()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("语音播报", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+        androidx.compose.material3.TextButton(
+            onClick = { model.speaker.speak(com.integemjack.friday.speech.BackgroundSpeaker.SAMPLE, force = true) },
+        ) { Text("试听") }
+        androidx.compose.material3.Switch(
+            checked = speak,
+            onCheckedChange = { model.settings.setSpeakInBackground(it) },
+        )
+    }
+    Spacer(Modifier.height(4.dp))
+    val problem = when (engine) {
+        com.integemjack.friday.speech.BackgroundSpeaker.Engine.NoChinese ->
+            "这台手机的文字转语音引擎不会说中文：去系统设置里装中文语音包，或者换一个引擎。"
+        com.integemjack.friday.speech.BackgroundSpeaker.Engine.Unavailable ->
+            "这台手机没有能用的文字转语音引擎，念不出来。"
+        else -> null
+    }
+    Text(
+        problem ?: if (speak) {
+            "在后台时有调用等你确认、Friday 在问你，除了通知再念一句。静音或震动、开着勿扰、打电话时不念；音量跟媒体音量走。"
+        } else {
+            "关着：在后台只弹通知，不出声。"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = if (problem != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (problem != null) {
+        androidx.compose.material3.TextButton(onClick = { openTtsSettings(context) }) { Text("打开文字转语音设置") }
+    }
+}
+
+/** 系统的「文字转语音」设置页（不是公开 API，各家都认这个 action；打不开就退到系统设置首页） */
+private fun openTtsSettings(context: android.content.Context) {
+    runCatching { context.startActivity(android.content.Intent("com.android.settings.TTS_SETTINGS")) }.onFailure {
+        runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_SETTINGS)) }
     }
 }
 

@@ -21,7 +21,18 @@ class AppSettings(private val prefs: SharedPreferences) {
         _keepAlive.value = on
     }
 
+    private val _speakInBackground = MutableStateFlow(prefs.getBoolean(KEY_SPEAK_IN_BACKGROUND, true))
+
+    /** 后台语音播报（在后台时有调用等你确认，除了通知再念一句）；默认开 */
+    val speakInBackground: StateFlow<Boolean> = _speakInBackground.asStateFlow()
+
+    fun setSpeakInBackground(on: Boolean) {
+        prefs.edit().putBoolean(KEY_SPEAK_IN_BACKGROUND, on).apply()
+        _speakInBackground.value = on
+    }
+
     private companion object {
         const val KEY_KEEP_ALIVE = "keepAlive"
+        const val KEY_SPEAK_IN_BACKGROUND = "speakInBackground"
     }
 }

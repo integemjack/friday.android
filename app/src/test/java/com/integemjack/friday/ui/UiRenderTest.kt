@@ -1656,6 +1656,45 @@ class UiRenderTest {
         assertNoText("断开工作通道")
     }
 
+    @Test
+    fun `设置里后台连接开着才有语音播报：默认开、开关记下、引擎不会说中文时写出来`() {
+        val model = modelWith(FridayState(conn = connected))
+        render(model) { SettingsScreen() }
+        compose.onNodeWithText("语音播报").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("试听").assertExists()
+        assertTrue(model.settings.speakInBackground.value)
+
+        // 设置页的开关在语义树里都是平级的：取跟「语音播报」同一行的那个
+        val label = compose.onNodeWithText("语音播报").getBoundsInRoot()
+        val toggles = compose.onAllNodes(androidx.compose.ui.test.isToggleable())
+        val row = (0 until toggles.fetchSemanticsNodes().size).single { i ->
+            val b = toggles[i].getBoundsInRoot()
+            b.top < label.bottom && b.bottom > label.top
+        }
+        val toggle = toggles[row]
+        toggle.performClick()
+        assertEquals(false, model.settings.speakInBackground.value)
+        compose.onNodeWithText("关着：在后台只弹通知，不出声。").assertExists()
+        toggle.performClick()
+        assertTrue(model.settings.speakInBackground.value)
+
+        // 引擎起来了但不会说中文（假引擎没登记任何语言）
+        org.robolectric.shadows.ShadowTextToSpeech.reset()
+        model.speaker.speak("试一下")
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        val tts = org.robolectric.shadows.ShadowTextToSpeech.getLastTextToSpeechInstance()
+        org.robolectric.shadow.api.Shadow.extract<org.robolectric.shadows.ShadowTextToSpeech>(tts)
+            .onInitListener.onInit(android.speech.tts.TextToSpeech.SUCCESS)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        compose.onNodeWithText("这台手机的文字转语音引擎不会说中文", substring = true).assertExists()
+        compose.onNodeWithText("打开文字转语音设置").assertExists()
+
+        // 后台连接关了：进程活不了，语音播报也就不列
+        compose.runOnIdle { model.settings.setKeepAlive(false) }
+        compose.waitForIdle()
+        assertNoText("语音播报")
+    }
+
     // MARK: 输入框的焦点和回车
 
     /** 主外壳 + 共用的输入框（字放在 [text]），页面中间一块「页面内容」用来点框外面 */

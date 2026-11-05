@@ -117,8 +117,11 @@ class AppModel(private val app: Application) {
     /** 输入框里打了一半的话（App 关掉再开还在） */
     val drafts = com.integemjack.friday.data.DraftStore(app)
 
-    /** 这台手机上的开关（后台保持连接） */
+    /** 这台手机上的开关（后台保持连接、语音播报） */
     val settings = com.integemjack.friday.data.AppSettings(app)
+
+    /** 后台语音播报：在后台时有调用等你确认，跟通知一起念一句 */
+    val speaker = com.integemjack.friday.speech.BackgroundSpeaker(app, inAssistantCall = { call.state.value.inCall })
 
     /** 快照归哪个 SChat 账号（换账号不串） */
     private fun account(): Long = schat.state.value.userId.takeIf { it > 0 } ?: schatStore.load()?.userId ?: 0L
@@ -329,12 +332,27 @@ class AppModel(private val app: Application) {
 
     private fun notifyAttention() {
         val friday = app as? FridayApp ?: return
-        // App 在前台：界面里已经有提醒，不再弹系统通知
+        // App 在前台：界面里已经有提醒，不再弹系统通知、不念
         if (friday.inForeground) return
-        if (!canNotify()) return
-        val approvals = client.state.value.activities.flatMap { activity ->
-            activity.approvals.map { activity.title to it }
+        val approvals = com.integemjack.friday.speech.pendingApprovals(client.state.value.activities)
+        val notified = canNotify() && postAttention(approvals)
+        // 语音播报跟通知开关无关（各管各的）；静音、勿扰、打电话时它自己不念。
+        // 通知有提示音就等它响完再念（提示音也占音频焦点，一起响的话开头被压低）
+        if (settings.speakInBackground.value) {
+            speaker.speak(
+                com.integemjack.friday.speech.attentionSpeech(approvals),
+                delayMs = if (notified && attentionChimes()) com.integemjack.friday.speech.BackgroundSpeaker.AFTER_CHIME_MS else 0,
+            )
         }
+    }
+
+    /** 「待确认」这个通知渠道响不响（用户可能在系统设置里把它调成静默） */
+    private fun attentionChimes(): Boolean {
+        val channel = NotificationManagerCompat.from(app).getNotificationChannel(FridayApp.CHANNEL_ATTENTION) ?: return true
+        return channel.importance >= NotificationManager.IMPORTANCE_DEFAULT && channel.sound != null
+    }
+
+    private fun postAttention(approvals: List<Pair<String, com.integemjack.friday.proto.PendingApproval>>): Boolean {
         val (title, text) = when {
             approvals.isEmpty() -> "Friday 等你确认" to "远程会话里有调用在等你批准或回答"
             approvals.size == 1 -> {
@@ -356,5 +374,6 @@ class AppModel(private val app: Application) {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
         post(1002, notification)
+        return true
     }
 }

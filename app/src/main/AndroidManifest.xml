@@ -30,6 +30,10 @@
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <!-- 后台语音播报：同理，不声明就绑不上系统的文字转语音引擎（TextToSpeech 初始化失败） -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
         <!-- 登录页：看这台手机装没装 SChat、它认不认 schat://login/<token>（「通过 SChat 登录」） -->
         <package android:name="com.ireoo.schat" />
         <intent>
