@@ -58,6 +58,11 @@ class BackgroundSpeaker(
 
     private var tts: TextToSpeech? = null
     private var ready = false
+
+    /** 正在念（语音唤醒这时不认：别把自己念的听进去） */
+    @Volatile
+    var speaking = false
+        private set
     private var pending: Pair<String, Boolean>? = null
     private var focus: AudioFocusRequest? = null
     private var holdingFocus = false
@@ -162,6 +167,7 @@ class BackgroundSpeaker(
             return
         }
         val id = "friday-${++utterance}"
+        speaking = true
         val result = runCatching { t.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), id) }.getOrDefault(TextToSpeech.ERROR)
         // 念不出来（引擎进程被收掉了之类）：整个放掉，下一句重新起
         if (result != TextToSpeech.SUCCESS) shutdown()
@@ -171,6 +177,7 @@ class BackgroundSpeaker(
     private fun finished(utteranceId: String?) {
         main.post {
             if (utteranceId != "friday-$utterance") return@post
+            speaking = false
             abandonFocus()
             scheduleRelease()
         }
@@ -207,6 +214,7 @@ class BackgroundSpeaker(
 
     private fun shutdown() {
         main.removeCallbacks(release)
+        speaking = false
         abandonFocus()
         runCatching { tts?.shutdown() }
         tts = null

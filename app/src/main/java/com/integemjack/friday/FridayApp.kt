@@ -29,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class FridayApp : Application() {
@@ -85,12 +86,22 @@ class FridayApp : Application() {
                 setShowBadge(false)
             }
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_WAKE, "语音唤醒通话", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "说「星期五」叫起来的通话：熄屏、锁屏时把通话页摆出来（不响，叫醒时手机自己震一下）"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
+        )
     }
 
     companion object {
         const val CHANNEL_UPDATE = "updates"
         const val CHANNEL_ATTENTION = "attention"
         const val CHANNEL_CONNECTION = "connection"
+        const val CHANNEL_WAKE = "wake"
     }
 }
 
@@ -132,6 +143,64 @@ class AppModel(private val app: Application) {
         canNotify = { canNotify() },
         contentIntent = { assistantTabIntent() },
     )
+
+    /** 语音唤醒：说「星期五」就跟助手打语音电话（设置里开，默认关） */
+    val wake = com.integemjack.friday.wake.WakeWord(
+        app,
+        scope,
+        enabled = settings.wakeWord,
+        inCall = call.state.map { it.inCall }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, false),
+        speaking = { speaker.speaking },
+        onWake = { android.os.Handler(android.os.Looper.getMainLooper()).post { wakeUp() } },
+    )
+
+    /** 叫醒以后把通话页摆到眼前（锁屏上也行） */
+    private val wakeUi = com.integemjack.friday.wake.WakeCallUi(
+        app,
+        inForeground = { (app as? FridayApp)?.inForeground == true },
+        stillInCall = { call.state.value.inCall && call.state.value.phase != com.integemjack.friday.call.AssistantCall.Phase.Ended },
+        canNotify = { canNotify() },
+        hangup = { ConnectionService.hangupIntent(app) },
+    )
+
+    /** 这一通是不是说「星期五」叫起来的（挂了要收兜底通知；没打通要念一句为什么） */
+    @Volatile
+    private var wakeCall = false
+
+    /**
+     * 听到「星期五」了（主线程）：震一下，打给连着的那台（没连着就上次连的那台）的助手——只开声音；
+     * App 不在前台就把通话页摆出来（锁屏上也行）
+     */
+    fun wakeUp() {
+        if (call.state.value.inCall) return
+        buzz()
+        val botId = client.target?.botId?.takeIf { it > 0 }
+            ?: schat.state.value.lastBotId.takeIf { it > 0 }
+            ?: schatStore.load()?.botId ?: 0L
+        if (botId <= 0L) {
+            speaker.speak("还没选好要叫的助手，打开 Friday 选一下", force = true)
+            return
+        }
+        val name = client.state.value.assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手"
+        wakeCall = true
+        call.start(botId, name, video = false)
+        if (call.state.value.inCall && call.state.value.phase != com.integemjack.friday.call.AssistantCall.Phase.Ended) {
+            wakeUi.show()
+        }
+    }
+
+    /** 叫醒时手机震一下（熄屏时知道它听到了） */
+    private fun buzz() {
+        runCatching {
+            val vibrator = if (Build.VERSION.SDK_INT >= 31) {
+                app.getSystemService(android.os.VibratorManager::class.java)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                app.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+            }
+            vibrator?.vibrate(android.os.VibrationEffect.createOneShot(120, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+        }
+    }
 
     /** 通知上的按钮点了（广播里调）：发给那台，最多等 9 秒（广播要在 10 秒内收尾） */
     fun answerFromNotification(intent: Intent, done: () -> Unit) {
@@ -178,6 +247,8 @@ class AppModel(private val app: Application) {
         schatStore.load()?.botId?.takeIf { it > 0 }?.let { client.showCached(it) }
         persistSnapshots()
         watchNetwork()
+        wake.start()
+        watchWakeCalls()
         // 本地有 SChat 凭据就直接连
         schat.restore()
         // 登录 / 退出登录时（App 在前台）跟着开 / 关后台连接：不然刚登录的这次要等下次打开 App 才开
@@ -235,6 +306,28 @@ class AppModel(private val app: Application) {
         }
     }
 
+    /**
+     * 叫起来的那一通：没打通（聊天服务器没连上、对方没接）就念一句为什么（屏幕可能是黑的，看不到）；
+     * 挂了把兜底的全屏通知收掉
+     */
+    private fun watchWakeCalls() {
+        scope.launch {
+            var connected = false
+            call.state.collect { s ->
+                if (!wakeCall) return@collect
+                if (s.phase == com.integemjack.friday.call.AssistantCall.Phase.Active) connected = true
+                if (s.phase == com.integemjack.friday.call.AssistantCall.Phase.Ended || !s.inCall) {
+                    wakeUi.hide()
+                    if (!connected && s.phase == com.integemjack.friday.call.AssistantCall.Phase.Ended) {
+                        s.message?.takeIf { it.isNotBlank() && it != "已取消" }?.let { speaker.speak(it, force = true) }
+                    }
+                    wakeCall = false
+                    connected = false
+                }
+            }
+        }
+    }
+
     // MARK: 本地快照
 
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -280,6 +373,7 @@ class AppModel(private val app: Application) {
 
     /** 回到前台：后台连接按设置开 / 关；连接断着就马上重连（不等退避） */
     fun onForeground(context: Context) {
+        wake.poke()
         ConnectionService.sync(context)
         nudgeReconnect()
     }

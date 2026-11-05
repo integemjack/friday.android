@@ -1,0 +1,2 @@
+# 语音唤醒的词表：sherpa-onnx 按行读，别让 Windows 签出时换成 CRLF
+app/src/main/assets/kws/keywords.txt text eol=lf

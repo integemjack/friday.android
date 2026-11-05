@@ -44,6 +44,7 @@ class ConnectionService : Service() {
     private var watcher: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var inCall = false
+    private var wakeWanted = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -54,11 +55,14 @@ class ConnectionService : Service() {
             stop()
             return START_NOT_STICKY
         }
+        // 通知上的「挂断」（跟助手通话时）：挂了接着照常跑
+        if (intent?.action == ACTION_HANGUP) model.call.hangup()
         if (!model.settings.keepAlive.value || !model.schat.hasSession()) {
             stop()
             return START_NOT_STICKY
         }
         inCall = model.call.state.value.inCall
+        wakeWanted = model.wake.wanted()
         if (!goForeground(model)) {
             stop()
             return START_NOT_STICKY
@@ -70,9 +74,13 @@ class ConnectionService : Service() {
                     model.client.stateFlow.map { Triple(it.conn, it.lastServer?.hostname, waitingCount(it)) }.distinctUntilChanged(),
                     model.schat.state.map { it.phase }.distinctUntilChanged(),
                     model.call.state.map { it.inCall to it.video }.distinctUntilChanged(),
-                ) { _, _, call -> call }.collect { (calling, _) ->
-                    if (calling != inCall) {
+                    model.settings.wakeWord,
+                    model.wake.status.map { it.phase }.distinctUntilChanged(),
+                ) { _, _, call, _, _ -> call }.collect { (calling, _) ->
+                    val wake = model.wake.wanted()
+                    if (calling != inCall || wake != wakeWanted) {
                         inCall = calling
+                        wakeWanted = wake
                         goForeground(model) // 换服务类型（加 / 去掉麦克风、摄像头）
                     } else {
                         notify(model)
@@ -87,32 +95,48 @@ class ConnectionService : Service() {
         watcher?.cancel()
         scope.cancel()
         releaseWakeLock()
+        (application as? FridayApp)?.model?.wake?.setServiceMic(false)
         super.onDestroy()
     }
 
     private fun stop() {
         releaseWakeLock()
+        (application as? FridayApp)?.model?.wake?.setServiceMic(false)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    /** 进前台（或换类型）；Android 12+ 在后台起不来前台服务会抛异常：那就算了 */
-    private fun goForeground(model: AppModel): Boolean = runCatching {
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, build(model), serviceType(model))
+    /**
+     * 进前台（或换类型）；Android 12+ 在后台起不来前台服务会抛异常：那就算了。
+     * 只是为了语音唤醒要的麦克风拿不到（进程在后台被系统重启的）：先不带麦克风保住连接，等下次打开 App
+     */
+    private fun goForeground(model: AppModel): Boolean {
+        val type = serviceType(model)
+        if (start(model, type)) {
+            model.wake.setServiceMic(type and MIC != 0)
+            return true
+        }
+        if (type and MIC != 0 && !inCall && start(model, type and MIC.inv())) {
+            model.wake.setServiceMic(false)
+            return true
+        }
+        model.wake.setServiceMic(false)
+        return false
+    }
+
+    private fun start(model: AppModel, type: Int): Boolean = runCatching {
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, build(model), type)
         true
     }.getOrElse { false }
 
-    private fun serviceType(model: AppModel): Int {
-        var type = 0
-        if (Build.VERSION.SDK_INT >= 34) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-        if (inCall && Build.VERSION.SDK_INT >= 30) {
-            if (granted(Manifest.permission.RECORD_AUDIO)) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            if (model.call.state.value.video && granted(Manifest.permission.CAMERA)) {
-                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-            }
-        }
-        return type
-    }
+    private fun serviceType(model: AppModel): Int = foregroundTypes(
+        sdk = Build.VERSION.SDK_INT,
+        inCall = inCall,
+        video = model.call.state.value.video,
+        wakeWord = wakeWanted,
+        mic = granted(Manifest.permission.RECORD_AUDIO),
+        camera = granted(Manifest.permission.CAMERA),
+    )
 
     private fun granted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
@@ -127,8 +151,9 @@ class ConnectionService : Service() {
         val schat = model.schat.state.value
         val host = (state.conn as? ConnState.Connected)?.server?.hostname ?: state.lastServer?.hostname
         val waiting = waitingCount(state)
+        val calling = model.call.state.value.inCall
         val text = when {
-            model.call.state.value.inCall -> "正在跟助手通话"
+            calling -> "正在跟助手通话"
             schat.phase != SchatService.Phase.Online -> "SChat 没连上，网络回来就自动重连"
             state.conn is ConnState.Connected -> buildString {
                 append("已连上 ").append(host ?: "远程 Friday")
@@ -136,7 +161,7 @@ class ConnectionService : Service() {
             }
             state.conn is ConnState.Connecting -> "正在连 ${host ?: "远程 Friday"}…"
             else -> "连接断了，自动重连中…"
-        }
+        } + wakeSuffix(model.wake.status.value.phase, calling)
         val open = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
@@ -152,7 +177,10 @@ class ConnectionService : Service() {
             .setContentTitle("Friday 后台保持连接")
             .setContentText(text)
             .setContentIntent(open)
-            .addAction(0, "不再后台连接", turnOff)
+            .apply {
+                if (calling) addAction(0, "挂断", hangupIntent(this@ConnectionService))
+                else addAction(0, "不再后台连接", turnOff)
+            }
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
@@ -182,6 +210,37 @@ class ConnectionService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 1003
         private const val ACTION_TURN_OFF = "com.integemjack.friday.KEEP_ALIVE_OFF"
+        private const val ACTION_HANGUP = "com.integemjack.friday.HANGUP"
+        private const val MIC = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+
+        /** 通知上的「挂断」（常驻通知、语音唤醒兜底的那条） */
+        fun hangupIntent(context: Context): PendingIntent = PendingIntent.getService(
+            context, 2,
+            Intent(context, ConnectionService::class.java).setAction(ACTION_HANGUP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        /**
+         * 前台服务的类型：Android 14+ 一直有 specialUse；跟助手通话、或开着语音唤醒时加麦克风（有权限才加），
+         * 视频通话再加摄像头
+         */
+        internal fun foregroundTypes(sdk: Int, inCall: Boolean, video: Boolean, wakeWord: Boolean, mic: Boolean, camera: Boolean): Int {
+            var type = 0
+            if (sdk >= 34) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            if (sdk >= 30) {
+                if ((inCall || wakeWord) && mic) type = type or MIC
+                if (inCall && video && camera) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
+            return type
+        }
+
+        /** 常驻通知末尾那一小句：在听「星期五」/ 为什么没在听 */
+        internal fun wakeSuffix(phase: com.integemjack.friday.wake.WakeWord.Phase, calling: Boolean): String = when {
+            calling -> ""
+            phase == com.integemjack.friday.wake.WakeWord.Phase.Listening -> " · 在听「${com.integemjack.friday.wake.WAKE_WORD}」"
+            phase == com.integemjack.friday.wake.WakeWord.Phase.NeedsService -> " · 语音唤醒暂停：打开一次 Friday 恢复"
+            else -> ""
+        }
 
         private fun waitingCount(state: com.integemjack.friday.proto.FridayState): Int {
             val runner = state.runner ?: return 0

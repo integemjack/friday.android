@@ -1714,6 +1714,47 @@ class UiRenderTest {
         assertNoText("语速")
     }
 
+    @Test
+    fun `设置里语音唤醒默认关；打开后写在不在听、小米要开的权限；后台连接关了不列`() {
+        org.robolectric.shadows.ShadowBuild.setManufacturer("Xiaomi")
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.RECORD_AUDIO)
+        // MIUI 的「锁屏显示」没开、「后台弹出界面」开了
+        val ops = app.getSystemService(android.app.AppOpsManager::class.java)
+        org.robolectric.Shadows.shadowOf(ops).setMode(
+            com.integemjack.friday.wake.WakePermissions.MIUI_SHOW_WHEN_LOCKED, android.os.Process.myUid(), app.packageName,
+            android.app.AppOpsManager.MODE_IGNORED,
+        )
+        val model = modelWith(FridayState(conn = connected))
+        model.wake.start()
+        render(model) { SettingsScreen() }
+        compose.onNodeWithText("语音唤醒").performScrollTo().assertIsDisplayed()
+        assertEquals(false, model.settings.wakeWord.value)
+        compose.onNodeWithText("关着：不听。打开后说「星期五」就能叫助手（语音通话），不用碰手机。").assertExists()
+
+        val label = compose.onNodeWithText("语音唤醒").getBoundsInRoot()
+        val toggles = compose.onAllNodes(androidx.compose.ui.test.isToggleable())
+        val row = (0 until toggles.fetchSemanticsNodes().size).single { i ->
+            val b = toggles[i].getBoundsInRoot()
+            b.top < label.bottom && b.bottom > label.top
+        }
+        toggles[row].performClick()
+        assertTrue(model.settings.wakeWord.value)
+        compose.onNodeWithText("说「星期五」就跟助手语音通话", substring = true).assertExists()
+        compose.onNodeWithText("一开口就说「星期五晚上……」也会叫醒", substring = true).assertExists()
+        // 测试里没起前台服务：没拿到麦克风
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("后台没拿到麦克风：打开一次 Friday 就恢复").fetchSemanticsNodes().isNotEmpty()
+        }
+        // 小米：锁屏弹通话页要开的权限 + 入口
+        compose.onNodeWithText("小米手机：「锁屏显示」没开，锁屏、熄屏时通话页弹不出来", substring = true).assertExists()
+        compose.onNodeWithText("去打开").assertExists()
+
+        // 后台连接关了：一直听靠的那个前台服务没了，就不列
+        compose.runOnIdle { model.settings.setKeepAlive(false) }
+        compose.waitForIdle()
+        assertNoText("语音唤醒")
+    }
+
     // MARK: 输入框的焦点和回车
 
     /** 主外壳 + 共用的输入框（字放在 [text]），页面中间一块「页面内容」用来点框外面 */

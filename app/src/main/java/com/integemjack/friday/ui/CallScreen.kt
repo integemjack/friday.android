@@ -55,6 +55,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import com.integemjack.friday.call.AssistantCall
 import kotlinx.coroutines.delay
 import org.webrtc.RendererCommon
@@ -71,6 +73,7 @@ fun CallScreen(call: AssistantCall) {
     val state by call.state.collectAsState()
     if (!state.inCall) return
     BackHandler { /* 通话中返回键不挂断 */ }
+    DarkSystemBars()
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(state.phase) {
@@ -181,6 +184,31 @@ fun CallScreen(call: AssistantCall) {
                         container = Color(0xFFE5484D),
                     ) { call.hangup() }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 通话页是深色底：盖着的这段时间状态栏、导航条的图标换成浅色（浅色主题下本来是深色图标，压在深底上看不见），
+ * 收起时还原
+ */
+@Composable
+private fun DarkSystemBars() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        var context = view.context
+        while (context is android.content.ContextWrapper && context !is android.app.Activity) context = context.baseContext
+        val window = (context as? android.app.Activity)?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        val status = controller?.isAppearanceLightStatusBars
+        val navigation = controller?.isAppearanceLightNavigationBars
+        controller?.isAppearanceLightStatusBars = false
+        controller?.isAppearanceLightNavigationBars = false
+        onDispose {
+            if (controller != null) {
+                status?.let { controller.isAppearanceLightStatusBars = it }
+                navigation?.let { controller.isAppearanceLightNavigationBars = it }
             }
         }
     }

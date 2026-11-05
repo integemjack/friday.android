@@ -51,6 +51,7 @@ class VoiceInput internal constructor(
 @Composable
 fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
     val context = LocalContext.current
+    val model = LocalAppModel.current
     val current by rememberUpdatedState(draft)
     val holder = remember { DictationHolder() }
 
@@ -72,6 +73,8 @@ fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
         }
         holder.recognizer?.destroy()
         holder.recognizer = recognizer
+        // 语音唤醒先把麦克风让出来（两边一起录，系统可能把听写那边静音）
+        model.wake.hold(WAKE_HOLD)
         recognizer.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
@@ -113,6 +116,7 @@ fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
                 input.level = 0f
                 holder.recognizer?.destroy()
                 holder.recognizer = null
+                model.wake.release(WAKE_HOLD)
             }
         })
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -124,6 +128,7 @@ fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
         input.listening = true
         runCatching { recognizer.startListening(intent) }.onFailure {
             input.listening = false
+            model.wake.release(WAKE_HOLD)
             Toast.makeText(context, "语音识别起不来（${it.message}）", Toast.LENGTH_SHORT).show()
         }
     }
@@ -149,10 +154,14 @@ fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
         onDispose {
             holder.recognizer?.destroy()
             holder.recognizer = null
+            model.wake.release(WAKE_HOLD)
         }
     }
     return voice
 }
+
+/** 听写时让语音唤醒放开麦克风用的名字 */
+private const val WAKE_HOLD = "dictation"
 
 private class DictationHolder {
     var recognizer: SpeechRecognizer? = null

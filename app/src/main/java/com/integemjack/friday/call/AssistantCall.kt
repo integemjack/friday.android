@@ -168,6 +168,8 @@ class AssistantCall(
         }
         signaling?.hangup()
         end(if (_state.value.connectedAt > 0) "通话结束 · ${durationText()}" else "已取消")
+        // 自己点的挂断：直接收起，不停在「通话结束」那一页（对方挂的、没打通的才停 2.5 秒给人看原因）
+        dismiss()
     }
 
     /** 演示数据用（debug 包的 DemoData）：直接摆一个通话中的样子看排版，不拨号、不碰媒体 */

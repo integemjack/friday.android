@@ -41,9 +41,20 @@ class AppSettings(private val prefs: SharedPreferences) {
         _liveIsland.value = on
     }
 
+    private val _wakeWord = MutableStateFlow(prefs.getBoolean(KEY_WAKE_WORD, false))
+
+    /** 语音唤醒：一直听「星期五」，听到就跟助手打语音电话；麦克风常开，默认关 */
+    val wakeWord: StateFlow<Boolean> = _wakeWord.asStateFlow()
+
+    fun setWakeWord(on: Boolean) {
+        prefs.edit().putBoolean(KEY_WAKE_WORD, on).apply()
+        _wakeWord.value = on
+    }
+
     private companion object {
         const val KEY_KEEP_ALIVE = "keepAlive"
         const val KEY_SPEAK_IN_BACKGROUND = "speakInBackground"
         const val KEY_LIVE_ISLAND = "liveIsland"
+        const val KEY_WAKE_WORD = "wakeWord"
     }
 }

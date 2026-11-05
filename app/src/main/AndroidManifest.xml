@@ -26,6 +26,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 语音唤醒（说「星期五」）：叫醒时震一下；熄屏 / 锁屏时用全屏通知把通话页摆出来 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- Android 11+ 包可见性：不声明就找不到系统的语音识别服务（SpeechRecognizer 永远「不可用」） -->
     <queries>
@@ -62,6 +65,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 说「星期五」叫起来的通话页：锁屏上面显示、熄屏时点亮；自己一个任务，不把主界面带到锁屏上 -->
+        <activity
+            android:name=".wake.WakeCallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:taskAffinity="com.integemjack.friday.wake"
+            android:turnScreenOn="true" />
 
         <!-- 后台保持连接（ConnectionService 的注释里说了为什么是 specialUse） -->
         <service

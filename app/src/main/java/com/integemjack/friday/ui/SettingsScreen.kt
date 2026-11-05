@@ -240,6 +240,155 @@ private fun BackgroundCard() {
             SpeakRow()
             Spacer(Modifier.height(14.dp))
             IslandRow()
+            Spacer(Modifier.height(14.dp))
+            WakeRow()
+        }
+    }
+}
+
+/**
+ * 语音唤醒（在「后台保持连接」开着时才有：一直听要靠那个前台服务）：默认关，开的时候先要麦克风权限。
+ * 开着时写现在在不在听、最近一次听到了什么（没叫醒的话为什么）；小米上写锁屏弹通话页要开的两项权限，
+ * Android 14+ 全屏通知没允许时给入口
+ */
+@Composable
+private fun WakeRow() {
+    val context = LocalContext.current
+    val model = LocalAppModel.current
+    val on by model.settings.wakeWord.collectAsState()
+    val status by model.wake.status.collectAsState()
+    val heard by model.wake.heard.collectAsState()
+    val word = com.integemjack.friday.wake.WAKE_WORD
+    fun enable(want: Boolean) {
+        model.settings.setWakeWord(want)
+        com.integemjack.friday.ConnectionService.sync(context)
+    }
+    val micPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            enable(true)
+        } else {
+            android.widget.Toast.makeText(context, "要用语音唤醒得给麦克风权限", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    fun hasMic() = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("语音唤醒", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+        androidx.compose.material3.Switch(
+            checked = on,
+            onCheckedChange = { want ->
+                if (want && !hasMic()) micPermission.launch(android.Manifest.permission.RECORD_AUDIO) else enable(want)
+            },
+        )
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        if (on) {
+            "说「$word」就跟助手语音通话，锁屏、熄屏也行（听到了手机先震一下）。先停一下再说：" +
+                "句子中间的「$word」（今天是$word）不算，但一开口就说「${word}晚上……」也会叫醒。" +
+                "麦克风一直开着（状态栏有麦克风标志），会多耗电。"
+        } else {
+            "关着：不听。打开后说「$word」就能叫助手（语音通话），不用碰手机。"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (!on) return
+
+    // 从系统设置回来时重新看一眼权限
+    var revision by remember { mutableStateOf(0) }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) revision++
+        }
+        lifecycle.lifecycle.addObserver(observer)
+        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+    }
+
+    val phase = status.phase
+    val good = phase == com.integemjack.friday.wake.WakeWord.Phase.Listening
+    val bad = phase in setOf(
+        com.integemjack.friday.wake.WakeWord.Phase.NeedsMic,
+        com.integemjack.friday.wake.WakeWord.Phase.MicFailed,
+        com.integemjack.friday.wake.WakeWord.Phase.Unsupported,
+    )
+    Spacer(Modifier.height(10.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Dot(
+            when {
+                good -> LocalFridayExtra.current.success
+                bad -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.tertiary
+            },
+            size = 7.dp,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            when (phase) {
+                com.integemjack.friday.wake.WakeWord.Phase.Listening -> "在听「$word」"
+                com.integemjack.friday.wake.WakeWord.Phase.Starting -> "正在准备…"
+                com.integemjack.friday.wake.WakeWord.Phase.Paused -> "暂停：${status.detail ?: ""}"
+                com.integemjack.friday.wake.WakeWord.Phase.NeedsMic -> "没有麦克风权限"
+                com.integemjack.friday.wake.WakeWord.Phase.NeedsService -> "后台没拿到麦克风：打开一次 Friday 就恢复"
+                com.integemjack.friday.wake.WakeWord.Phase.MicFailed -> status.detail ?: "麦克风开不了"
+                com.integemjack.friday.wake.WakeWord.Phase.Unsupported -> status.detail ?: "这台手机不支持"
+                com.integemjack.friday.wake.WakeWord.Phase.Off -> "关着"
+            },
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.weight(1f),
+        )
+        if (phase == com.integemjack.friday.wake.WakeWord.Phase.NeedsMic) {
+            TextButton(onClick = { micPermission.launch(android.Manifest.permission.RECORD_AUDIO) }) { Text("给权限") }
+        }
+    }
+    heard?.let { h ->
+        val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(h.atMs))
+        Spacer(Modifier.height(4.dp))
+        Text(
+            if (h.woke) "$time 听到「${h.keyword}」：叫醒了" else "$time 听到「${h.keyword}」：没叫醒（${h.reason ?: "不算"}）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    // 锁屏上弹通话页要的权限
+    val fullScreen = remember(revision) { com.integemjack.friday.wake.WakePermissions.canFullScreen(context) }
+    if (!fullScreen) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "「全屏通知」没允许：锁屏时通话页弹不出来，只有一条通知。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        TextButton(onClick = { com.integemjack.friday.wake.WakePermissions.openFullScreenSettings(context) }) { Text("去允许") }
+    }
+    if (com.integemjack.friday.wake.WakePermissions.isXiaomi()) {
+        val locked = remember(revision) {
+            com.integemjack.friday.wake.WakePermissions.miuiAllowed(context, com.integemjack.friday.wake.WakePermissions.MIUI_SHOW_WHEN_LOCKED)
+        }
+        val popup = remember(revision) {
+            com.integemjack.friday.wake.WakePermissions.miuiAllowed(context, com.integemjack.friday.wake.WakePermissions.MIUI_BACKGROUND_START)
+        }
+        val missing = listOfNotNull(
+            "锁屏显示".takeIf { locked != true },
+            "后台弹出界面".takeIf { popup != true },
+        )
+        if (missing.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (locked == null || popup == null) {
+                    "小米手机：锁屏、熄屏时要弹出通话页，得在系统的 Friday 权限里打开「锁屏显示」和「后台弹出界面」，再打开「自启动」免得被系统收掉。"
+                } else {
+                    "小米手机：「${missing.joinToString("」「")}」没开，锁屏、熄屏时通话页弹不出来（声音照样通）。也打开「自启动」免得被系统收掉。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (locked == null || popup == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            )
+            TextButton(onClick = { com.integemjack.friday.wake.WakePermissions.openMiuiPermissions(context) }) { Text("去打开") }
         }
     }
 }
