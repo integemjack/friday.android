@@ -63,6 +63,8 @@ data class LoopTask(
     val paused: Boolean,
     val runCount: Int,
     val lastResult: String?,
+    /** 「会话：标题」「助手」「系统」（服务端算好的） */
+    val targetLabel: String? = null,
 ) {
     val running: Boolean get() = runStartedAt != null
 
@@ -122,6 +124,7 @@ data class LoopTask(
                 paused = o.bool("paused") ?: false,
                 runCount = o.long("runCount")?.toInt() ?: 0,
                 lastResult = o.str("lastResult"),
+                targetLabel = o.str("targetLabel"),
             )
         }
 

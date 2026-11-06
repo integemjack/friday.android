@@ -21,6 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.activity.compose.BackHandler
 import com.integemjack.friday.ui.AssistantComposer
 import com.integemjack.friday.ui.AssistantScreen
+import com.integemjack.friday.ui.BackgroundTasksScreen
 import com.integemjack.friday.ui.ChatComposer
 import com.integemjack.friday.ui.ChatDrafts
 import com.integemjack.friday.ui.ChatScreen
@@ -30,6 +31,8 @@ import com.integemjack.friday.ui.HomeTabs
 import com.integemjack.friday.ui.LocalAppModel
 import com.integemjack.friday.ui.SettingsScreen
 import com.integemjack.friday.ui.SessionsScreen
+import com.integemjack.friday.ui.SwipePageHost
+import com.integemjack.friday.ui.rememberSwipePageState
 import com.integemjack.friday.ui.theme.FridayTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -150,6 +153,8 @@ private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Uni
     }
     val chatDrafts = remember { ChatDrafts(model.drafts) }
     val requested by tabRequest.collectAsState()
+    // 助手页右上角点开的「后台任务」子页面：盖在主框架上面，主框架留着
+    val tasksPage = rememberSwipePageState()
 
     // 切页：离开会话页就退订那段会话（事件量不小，没人看就别收）
     fun go(target: Int) {
@@ -159,6 +164,7 @@ private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Uni
     // 通知点进来：跳到那一页（老通知里带的活动页编号已经没了，回助手页）
     androidx.compose.runtime.LaunchedEffect(requested) {
         requested?.let {
+            tasksPage.close()
             go(HomeTabs.of(it))
             tabRequest.value = null
         }
@@ -222,23 +228,25 @@ private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Uni
         }
         else -> null
     }
-    HomeScaffold(
-        tab = tab,
-        onTab = ::go,
-        dock = dock,
-        sessions = {
-            SessionsScreen(
-                onOpen = ::openConversation,
-                selectedId = if (tab == HomeTabs.CHAT) openConversationId else null,
-                onGoSettings = { go(HomeTabs.SETTINGS) },
-            )
-        },
-        onNewConversation = ::newConversation,
-    ) {
-        when (tab) {
-            HomeTabs.ASSISTANT -> AssistantScreen(onOpenSession = ::openConversation)
-            HomeTabs.CHAT -> ChatScreen()
-            else -> SettingsScreen(onSwitchBot = onSwitchBot)
+    SwipePageHost(tasksPage, page = { BackgroundTasksScreen(onBack = tasksPage::close) }) {
+        HomeScaffold(
+            tab = tab,
+            onTab = ::go,
+            dock = dock,
+            sessions = {
+                SessionsScreen(
+                    onOpen = ::openConversation,
+                    selectedId = if (tab == HomeTabs.CHAT) openConversationId else null,
+                    onGoSettings = { go(HomeTabs.SETTINGS) },
+                )
+            },
+            onNewConversation = ::newConversation,
+        ) {
+            when (tab) {
+                HomeTabs.ASSISTANT -> AssistantScreen(onOpenSession = ::openConversation, onOpenBackground = tasksPage::open)
+                HomeTabs.CHAT -> ChatScreen()
+                else -> SettingsScreen(onSwitchBot = onSwitchBot)
+            }
         }
     }
     // 跟助手的通话盖在整个界面上（没在通话时什么都不画）

@@ -717,6 +717,13 @@ class FridayClient(
         state.value = state.value.copy(loops = LoopTask.listFrom(result))
     }
 
+    /** 结束一个定时任务：删掉，以后不再跑（这一次已经开始了的不打断；系统任务删不了，回错误 4） */
+    suspend fun removeLoop(id: String) {
+        val rpc = rpc ?: throw Exception("未连接")
+        val result = rpc.request("loops.remove", buildJsonObject { put("id", id) }).jsonObject
+        state.value = state.value.copy(loops = LoopTask.listFrom(result))
+    }
+
     /** 切到另一条分支（parentKey 空串 = 根消息那一层） */
     fun selectBranch(child: String, parentKey: String) {
         val chat = state.value.chat ?: return

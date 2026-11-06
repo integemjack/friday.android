@@ -1,6 +1,22 @@
 package com.integemjack.friday.ui
 
 import android.app.Application
+import androidx.activity.BackEventCompat
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.swipeUp
+import org.junit.Assert.assertFalse
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.runtime.Composable
@@ -580,6 +596,280 @@ class UiRenderTest {
         )
         render(model) { AssistantComposer(remember { ComposerDraft() }) }
         compose.onNodeWithText("后台：1 个定时任务").assertExists()
+    }
+
+    private fun conversation(id: String, title: String) = ConversationSummary(
+        id = id, title = title, updatedAt = "2026-01-01T00:00:00Z", pinned = false, isEmpty = false, hasDraft = false,
+    )
+
+    @Test
+    fun `全部会话的后台任务：按会话分组，只列还能结束的`() {
+        val assistant = AssistantState.fromJson(buildJsonObject { put("enabled", true); put("config", buildJsonObject { put("name", "小F") }) })
+        val groups = allBackground(
+            FridayState(
+                conn = connected,
+                assistant = assistant,
+                summaries = listOf(conversation("C9", "一直更新的"), conversation("C2", "修登录"), conversation("C1", "")),
+                team = listOf(
+                    backgroundRun("r1", "清理执行员").copy(conversationID = "C2"),
+                    backgroundRun("done", "跑完了的").copy(running = false),
+                    backgroundRun("front", "这一轮的").copy(background = false, detached = false),
+                ),
+                terminals = listOf(terminal("t1", running = true), terminal("t2", running = false, exitCode = 0)),
+                loops = listOf(
+                    loopTask("l1", conversation = "C3").copy(targetLabel = "会话：周报"),
+                    loopTask("a1", conversation = null, target = "assistant"),
+                    loopTask("sys", conversation = null, target = "system"),
+                ),
+            )
+        )
+        // 助手在最前，会话按服务端给的顺序（不按最近更新，免得列表跳）
+        assertEquals(listOf("小F", "修登录", "（无标题）", "周报"), groups.map { it.title })
+        assertEquals(listOf("a1"), groups[0].tasks.loops.map { it.id })
+        assertEquals(listOf("r1"), groups[1].tasks.agents.map { it.id })
+        assertEquals(listOf("t1"), groups[2].tasks.terminals.map { it.id })
+        assertEquals(listOf("l1"), groups[3].tasks.loops.map { it.id })
+    }
+
+    @Test
+    fun `后台任务页：每项一个结束，定时任务要再确认一次`() {
+        val calls = mutableListOf<String>()
+        val groups = allBackground(
+            FridayState(
+                summaries = listOf(conversation("C1", "发版"), conversation("C2", "修登录")),
+                team = listOf(backgroundRun("r1", "清理执行员")),
+                terminals = listOf(terminal("t1", running = true, conversation = "C2")),
+                loops = listOf(loopTask("l1")),
+            )
+        )
+        render(modelWith(FridayState(conn = connected))) {
+            BackgroundTasksContent(
+                groups,
+                connected = true,
+                actions = EndTaskActions(
+                    endAgent = { calls += "agent:$it" },
+                    endTerminal = { calls += "terminal:$it" },
+                    endLoop = { calls += "loop:$it" },
+                ),
+            )
+        }
+        compose.onNodeWithText("发版").assertExists()
+        compose.onNodeWithText("修登录").assertExists()
+        compose.onNodeWithText("清理执行员").assertExists()
+        compose.onNodeWithText("ctest -R http --output-on-failure").assertExists()
+        compose.onNodeWithText("跑模拟盘并汇报").assertExists()
+        val buttons = compose.onAllNodesWithText("结束")
+        assertEquals(3, buttons.fetchSemanticsNodes().size)
+        // 列表顺序：子 Agent、定时任务（都在「发版」下）、终端（「修登录」下）
+        buttons[0].performClick()
+        buttons[2].performClick()
+        buttons[1].performClick()
+        assertEquals("定时任务没点确认前不能结束", listOf("agent:r1", "terminal:t1"), calls)
+
+        // 取消了不结束；确认了才结束（对话框里的「结束」排在列表的三个后面）
+        compose.onNodeWithText("结束这个定时任务？").assertExists()
+        compose.onNodeWithText("取消").performClick()
+        assertNoText("结束这个定时任务？")
+        assertEquals(listOf("agent:r1", "terminal:t1"), calls)
+        buttons[1].performClick()
+        compose.onAllNodesWithText("结束")[3].performClick()
+        assertEquals(listOf("agent:r1", "terminal:t1", "loop:l1"), calls)
+    }
+
+    @Test
+    fun `后台任务页：正在停的子 Agent 不能再点，断开时写明`() {
+        val groups = allBackground(
+            FridayState(
+                team = listOf(backgroundRun("r1", "清理执行员").copy(stopRequested = true)),
+                terminals = listOf(terminal("t1", running = true)),
+            )
+        )
+        val offline = mutableStateOf(false)
+        render(modelWith(FridayState(conn = connected))) {
+            BackgroundTasksContent(groups, connected = !offline.value, actions = EndTaskActions(ending = setOf("t1")))
+        }
+        assertEquals(2, compose.onAllNodesWithText("结束中").fetchSemanticsNodes().size)
+        compose.onAllNodesWithText("结束中")[0].assertIsNotEnabled()
+        compose.onAllNodesWithText("结束中")[1].assertIsNotEnabled()
+        assertNoText("没连上，下面是断开前的样子")
+        offline.value = true
+        compose.onNodeWithText("没连上，下面是断开前的样子").assertExists()
+    }
+
+    @Test
+    fun `助手页右上角的按钮：写在跑几个，点开子页面，结束失败时告诉你，返回收起`() {
+        val model = modelWith(
+            FridayState(
+                conn = connected,
+                summaries = listOf(conversation("C1", "发版")),
+                team = listOf(backgroundRun("r1", "清理执行员")),
+                terminals = listOf(terminal("t1", running = true, conversation = "C2"), terminal("t2", running = false)),
+                loops = listOf(loopTask("l1")),
+            )
+        )
+        render(model) {
+            val page = rememberSwipePageState()
+            SwipePageHost(page, page = { BackgroundTasksScreen(onBack = page::close) }) {
+                AssistantScreen(onOpenBackground = page::open)
+            }
+        }
+        // 在跑的是子 Agent、终端各一个；没在跑的定时任务不算
+        compose.onNodeWithText("2").assertExists()
+        assertNoText("后台任务")
+        compose.onNodeWithContentDescription("后台任务").performClick()
+        compose.onNodeWithText("后台任务").assertIsDisplayed()
+        compose.onNodeWithText("清理执行员").assertIsDisplayed()
+
+        // 这个测试没有真连接：结束失败要说出来，按钮放开
+        compose.onAllNodesWithText("结束")[0].performClick()
+        compose.onNodeWithText("没结束").assertExists()
+        compose.onNodeWithText("知道了").performClick()
+        assertEquals(3, compose.onAllNodesWithText("结束").fetchSemanticsNodes().size)
+
+        compose.onNodeWithContentDescription("返回").performClick()
+        assertNoText("清理执行员")
+        compose.onNodeWithContentDescription("后台任务").assertIsDisplayed()
+    }
+
+    @Test
+    fun `子页面跟着手指走：拖一点松手弹回，拖过线、往右甩都收走`() {
+        lateinit var page: SwipePageState
+        compose.setContent {
+            FridayTheme {
+                page = rememberSwipePageState()
+                SwipePageHost(page, page = { Box(Modifier.fillMaxSize().testTag("子页面")) }) { Text("主屏") }
+            }
+        }
+        val node = compose.onNodeWithTag("子页面")
+        fun open() {
+            compose.runOnIdle { page.open() }
+            compose.waitForIdle()
+            assertEquals(1f, page.fraction, 0f)
+        }
+        open()
+        assertEquals(0f, node.getBoundsInRoot().left.value, 0.5f)
+        val width = node.getBoundsInRoot().right.value
+
+        // 慢慢拖 30%：页面停在手指那儿，松手弹回
+        node.performTouchInput {
+            down(center)
+            repeat(10) { moveBy(Offset(this.width * 0.03f, 0f), delayMillis = 50) }
+        }
+        compose.waitForIdle()
+        assertEquals(width * 0.3f, node.getBoundsInRoot().left.value, width * 0.05f)
+        node.performTouchInput { up() }
+        compose.waitForIdle()
+        assertEquals(1f, page.fraction, 0f)
+
+        // 慢慢拖 60%：过线了，松手收走
+        node.performTouchInput {
+            down(center)
+            repeat(12) { moveBy(Offset(this.width * 0.05f, 0f), delayMillis = 50) }
+            up()
+        }
+        compose.waitForIdle()
+        assertEquals(0f, page.fraction, 0f)
+        assertFalse(page.shown)
+        node.assertDoesNotExist()
+
+        // 只拖一小段但甩得快：也收走
+        open()
+        node.performTouchInput {
+            down(center)
+            repeat(3) { moveBy(Offset(this.width * 0.06f, 0f), delayMillis = 10) }
+            up()
+        }
+        compose.waitForIdle()
+        assertFalse(page.shown)
+
+        // 往左拖：不动
+        open()
+        node.performTouchInput {
+            down(center)
+            repeat(5) { moveBy(Offset(-this.width * 0.05f, 0f), delayMillis = 50) }
+            up()
+        }
+        compose.waitForIdle()
+        assertEquals(1f, page.fraction, 0f)
+    }
+
+    @Test
+    fun `子页面的滚动不被横向手势抢走，右滑时点不到按钮`() {
+        var clicks = 0
+        lateinit var page: SwipePageState
+        val listState = LazyListState()
+        compose.setContent {
+            FridayTheme {
+                page = rememberSwipePageState()
+                SwipePageHost(page, page = {
+                    Column(Modifier.fillMaxSize()) {
+                        Button(onClick = { clicks++ }, modifier = Modifier.testTag("按钮")) { Text("点我") }
+                        LazyColumn(Modifier.weight(1f).testTag("列表"), state = listState) {
+                            items(100) { Text("第 $it 行") }
+                        }
+                    }
+                }) { Text("主屏") }
+            }
+        }
+        compose.runOnIdle { page.open() }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("列表").performTouchInput { swipeUp() }
+        compose.waitForIdle()
+        assertTrue("列表要滚得动", listState.firstVisibleItemIndex > 0)
+        assertEquals("竖着滑页面不动", 1f, page.fraction, 0f)
+
+        compose.onNodeWithTag("按钮").performTouchInput {
+            down(center)
+            repeat(10) { moveBy(Offset(100f, 0f), delayMillis = 50) }
+            up()
+        }
+        compose.waitForIdle()
+        assertEquals("从按钮上开始滑不算点按钮", 0, clicks)
+        assertFalse(page.shown)
+    }
+
+    @Test
+    fun `子页面跟系统的返回手势：划一半跟着走，缩回去弹回，松手和返回键都收起`() {
+        lateinit var page: SwipePageState
+        lateinit var back: OnBackPressedDispatcher
+        compose.setContent {
+            FridayTheme {
+                page = rememberSwipePageState()
+                back = LocalOnBackPressedDispatcherOwner.current!!.onBackPressedDispatcher
+                SwipePageHost(page, page = { Box(Modifier.fillMaxSize()) }) { Text("主屏") }
+            }
+        }
+        fun event(progress: Float) = BackEventCompat(0f, 0f, progress, BackEventCompat.EDGE_LEFT)
+        compose.runOnIdle { page.open() }
+        compose.waitForIdle()
+
+        compose.runOnIdle {
+            back.dispatchOnBackStarted(event(0f))
+            back.dispatchOnBackProgressed(event(0.5f))
+        }
+        compose.waitForIdle()
+        assertEquals(0.5f, page.fraction, 0.01f)
+        compose.runOnIdle { back.dispatchOnBackCancelled() }
+        compose.waitForIdle()
+        assertEquals(1f, page.fraction, 0f)
+        assertTrue(page.shown)
+
+        compose.runOnIdle {
+            back.dispatchOnBackStarted(event(0f))
+            back.dispatchOnBackProgressed(event(0.4f))
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { back.onBackPressed() }
+        compose.waitForIdle()
+        assertFalse(page.shown)
+
+        // 普通返回键（三键导航、老系统）：没有进度，直接收
+        compose.runOnIdle { page.open() }
+        compose.waitForIdle()
+        compose.runOnIdle { back.onBackPressed() }
+        compose.waitForIdle()
+        assertFalse(page.shown)
     }
 
     @Test

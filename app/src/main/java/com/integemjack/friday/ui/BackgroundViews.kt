@@ -71,7 +71,8 @@ data class BackgroundTasks(
 
     /** 没有可列的（跑完了的子 Agent 不算；跑完了的终端还在列表里、能看输出，算） */
     val isEmpty: Boolean get() = runningAgents.isEmpty() && terminals.isEmpty() && loops.isEmpty()
-    val anyRunning: Boolean get() = runningAgents.isNotEmpty() || runningTerminals.isNotEmpty() || loops.any { it.running }
+    val anyRunning: Boolean get() = runningCount > 0
+    val runningCount: Int get() = runningAgents.size + runningTerminals.size + loops.count { it.running }
 
     /** 「1 个子 Agent、2 个终端在跑、1 个定时任务」 */
     val summary: String
@@ -102,6 +103,41 @@ fun conversationBackground(state: FridayState, conversationID: String?): Backgro
 /** 助手名下的定时任务（助手那里 /loop 建的） */
 fun assistantBackground(state: FridayState): BackgroundTasks =
     BackgroundTasks(loops = state.loops.filter { it.target == "assistant" })
+
+/** 全部会话的后台任务里的一组：一段会话（或助手）名下还在的 */
+data class BackgroundGroup(
+    /** 哪段会话；助手名下的是 null */
+    val conversationID: String?,
+    val title: String,
+    val tasks: BackgroundTasks,
+)
+
+/**
+ * 这台机器上全部会话的后台任务，按会话分组（助手页右上角那一页）：只列还能结束的——
+ * 在跑的后台子 Agent、在跑的终端、定时任务；跑完了的终端留在各段会话的面板里看输出。
+ * 系统任务（检查更新这些）不属于哪段会话、也删不掉，不列。
+ *
+ * 分组按服务端给的顺序排（助手在最前），不按会话最近更新：更新时间一直在变，
+ * 列表跟着跳的话，手指正要点「结束」时可能点到别的任务上。
+ */
+fun allBackground(state: FridayState): List<BackgroundGroup> {
+    val agents = state.team.filter { (it.background || it.detached) && it.running }.groupBy { it.conversationID }
+    val terminals = state.terminals.filter { it.running }.groupBy { it.conversationID }
+    val loops = state.loops.filter { it.target == "conversation" }.groupBy { it.conversationID.orEmpty() }
+    val titles = state.summaries.associate { it.id to it.title }
+    return buildList {
+        val assistantLoops = assistantBackground(state)
+        if (!assistantLoops.isEmpty) {
+            add(BackgroundGroup(null, state.assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手", assistantLoops))
+        }
+        (agents.keys + terminals.keys + loops.keys).forEach { id ->
+            val title = titles[id]?.ifBlank { "（无标题）" }
+                ?: loops[id]?.firstNotNullOfOrNull { it.targetLabel }?.removePrefix("会话：")?.takeIf { it.isNotBlank() }
+                ?: "其他会话"
+            add(BackgroundGroup(id, title, BackgroundTasks(agents[id].orEmpty(), terminals[id].orEmpty(), loops[id].orEmpty())))
+        }
+    }
+}
 
 /** 「在执行「执行命令」 · 第 5 步 · 已运行 3 分 2 秒」：按字段和现在的时间算，每秒刷新 */
 fun runStatusLine(run: TeamRun, nowMillis: Long): String {
@@ -211,7 +247,7 @@ fun BackgroundBar(tasks: BackgroundTasks, onOpen: () -> Unit) {
 
 /** 现在的时间，每秒刷新（运行了多久、下次什么时候） */
 @Composable
-private fun rememberNow() = produceState(System.currentTimeMillis()) {
+internal fun rememberNow() = produceState(System.currentTimeMillis()) {
     while (true) {
         delay(1000)
         value = System.currentTimeMillis()
@@ -293,8 +329,14 @@ private fun RowDivider() = HorizontalDivider(color = MaterialTheme.colorScheme.o
 
 /** 一行的骨架：左边状态（转圈 / 图标），右边内容 */
 @Composable
-private fun TaskRow(running: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector, iconTint: Color, content: @Composable () -> Unit) {
-    Row(verticalAlignment = Alignment.Top) {
+internal fun TaskRow(
+    running: Boolean,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Row(modifier, verticalAlignment = Alignment.Top) {
         Box(Modifier.padding(top = 2.dp).width(LineIndent)) {
             if (running) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
             else Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(16.dp))
@@ -304,9 +346,13 @@ private fun TaskRow(running: Boolean, icon: androidx.compose.ui.graphics.vector.
 }
 
 @Composable
-private fun SmallButton(text: String, color: Color = MaterialTheme.colorScheme.primary, onClick: () -> Unit) {
-    TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-        Text(text, style = MaterialTheme.typography.labelLarge, color = color)
+internal fun SmallButton(text: String, color: Color = MaterialTheme.colorScheme.primary, enabled: Boolean = true, onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (enabled) color else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

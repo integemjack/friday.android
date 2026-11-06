@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
@@ -335,6 +336,7 @@ private val HomeTopBarHeight = 52.dp
 /**
  * 顶级页面共用的顶栏：左上角侧栏入口（有待确认的调用时带个小红点），标题（设置下面再带一行小字；
  * 助手页、会话页只有标题）。切来切去，顶栏的高度、字号、按钮位置都不动。
+ * 子页面用同一条，左上角换成返回（[onBack]）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -343,6 +345,7 @@ fun HomeTopBar(
     subtitle: String? = null,
     subtitleColor: Color? = null,
     dotColor: Color? = null,
+    onBack: (() -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -354,7 +357,13 @@ fun HomeTopBar(
             scrolledContainerColor = scheme.background,
         ),
         navigationIcon = {
-            if (openDrawer != null) DrawerButton(openDrawer)
+            if (onBack != null) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", modifier = Modifier.size(22.dp))
+                }
+            } else if (openDrawer != null) {
+                DrawerButton(openDrawer)
+            }
         },
         title = {
             Column {

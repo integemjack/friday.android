@@ -100,6 +100,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun AssistantScreen(
     onOpenSession: (String) -> Unit = {},
+    onOpenBackground: () -> Unit = {},
 ) {
     val model = LocalAppModel.current
     val state by model.client.stateFlow.collectAsState()
@@ -157,8 +158,11 @@ fun AssistantScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             // 和会话页同一条顶栏（左上角侧栏入口 + 标题），两页切来切去不跳。
-            // 只有标题：连没连上看侧栏顶上，开关助手在设置里
-            HomeTopBar(title = assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手")
+            // 连没连上看侧栏顶上，开关助手在设置里；右上角是全部会话的后台任务
+            HomeTopBar(
+                title = assistant?.config?.name?.takeIf { it.isNotBlank() } ?: "助手",
+                actions = { BackgroundTasksButton(state, onOpenBackground) },
+            )
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
