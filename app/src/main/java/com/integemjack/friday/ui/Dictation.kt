@@ -101,6 +101,17 @@ internal class Dictation(
     private var running = false
 
     /**
+     * 这一段已经收尾了。小米自带的语音识别一段结束会先报 NO_MATCH、紧接着（9 毫秒后）再给一个空的 onResults：
+     * 两个都当「这段完了、开下一段」就会连开两次，第二次撞上「正忙」（ERROR_RECOGNIZER_BUSY），重试几次不行就收掉了——
+     * 界面上变回「没在听」，后面说的话也丢了（2026-11-25 1.0.37 的日志）。同一段只收一次尾，第二个带字的照样把字补进去
+     */
+    private var segmentClosed = false
+
+    /** 开过几段（测试看有没有重复开） */
+    internal var segments = 0
+        private set
+
+    /**
      * 识别服务报过音量（onRmsChanged）。小米自带的语音识别不报（2026-11-25 M2002J9E 上实测音波一直是矮点）：
      * 那就拿「出字了」当说话的动静，字一长音波跳一下、过一会儿落回去（[pulse]）
      */
@@ -171,6 +182,8 @@ internal class Dictation(
 
     private fun listen() {
         val recognizer = recognizer ?: return
+        segmentClosed = false
+        segments++
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
@@ -279,7 +292,16 @@ internal class Dictation(
             if (!running) return
             busyRetries = 0
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            log("一段说完：${text?.length ?: -1} 字，在听 ${input.listening}")
+            log("一段说完：${text?.length ?: -1} 字，在听 ${input.listening}${if (segmentClosed) "（这段已经收过尾）" else ""}")
+            // 同一段的第二个收尾（小米先报 NO_MATCH 再给空结果）：有字就补进去，不再开下一段
+            if (segmentClosed) {
+                if (!text.isNullOrBlank()) {
+                    partial = text
+                    commitPartial()
+                }
+                return
+            }
+            segmentClosed = true
             // 这段的最终结果替掉 partial；没给结果就留着听到的一半
             if (!text.isNullOrBlank()) {
                 pulse(text.length - partial.length)
@@ -291,8 +313,9 @@ internal class Dictation(
 
         override fun onError(error: Int) {
             heard()
-            log("出错 $error（还要听 $wanted）")
-            if (!running) return
+            log("出错 $error（还要听 $wanted）${if (segmentClosed) "（这段已经收过尾）" else ""}")
+            if (!running || segmentClosed) return
+            segmentClosed = true
             commitPartial()
             when {
                 // 按了停：这段收尾时报的错不用管
@@ -302,6 +325,8 @@ internal class Dictation(
                 // 刚结束一段马上开下一段，有的识别服务还没收拾好：等一下再开，连着几次都不行就算了
                 (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT) && busyRetries < MAX_BUSY_RETRIES -> {
                     busyRetries++
+                    // 先把它手上那段收掉再重开
+                    runCatching { recognizer?.cancel() }
                     main.postDelayed({ if (running && wanted) listen() }, BUSY_RETRY_MS)
                 }
                 else -> fail(dictationError(error))

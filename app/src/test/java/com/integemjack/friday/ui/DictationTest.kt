@@ -118,6 +118,29 @@ class DictationTest {
     }
 
     @Test
+    fun `小米一段结束先报没听到、紧接着再给个空结果：只开一次下一段，晚到的字照样补进去`() {
+        start()
+        val shadow = recognizer()
+        shadow.triggerOnReadyForSpeech(Bundle())
+        assertEquals(1, dictation.segments)
+        // 1.0.37 真机日志：出错 7 → 9 毫秒后一个空的 onResults
+        shadow.triggerOnError(SpeechRecognizer.ERROR_NO_MATCH)
+        shadow.triggerOnResults(Bundle())
+        nextSegment()
+        assertEquals("只开了一次下一段", 2, dictation.segments)
+        assertTrue(voice.listening)
+        // 这段说了话：结果之后又来一个带字的收尾，字补进去，也不多开
+        shadow.triggerOnPartialResults(words("明天下午"))
+        shadow.triggerOnResults(words("明天下午三点"))
+        shadow.triggerOnError(SpeechRecognizer.ERROR_NO_MATCH)
+        nextSegment()
+        assertEquals(3, dictation.segments)
+        assertEquals("原有的话，明天下午三点", draft.input)
+        assertTrue(voice.listening)
+        assertTrue(notices.isEmpty())
+    }
+
+    @Test
     fun `小米把上一句的尾巴又认一遍：重的去掉，不重的照接`() {
         start()
         val shadow = recognizer()
