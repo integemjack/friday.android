@@ -2301,6 +2301,54 @@ class UiRenderTest {
     }
 
     @Test
+    fun `助手页的输入框听写：说完一句框里出字、一直在听，再按一下才停`() {
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.RECORD_AUDIO)
+        org.robolectric.Shadows.shadowOf(app.packageManager).addResolveInfoForIntent(
+            android.content.Intent(android.speech.RecognitionService.SERVICE_INTERFACE),
+            android.content.pm.ResolveInfo().apply {
+                serviceInfo = android.content.pm.ServiceInfo().apply { packageName = "com.example.asr"; name = "Asr" }
+            },
+        )
+        org.robolectric.shadows.ShadowSpeechRecognizer.reset()
+        val draft = ComposerDraft("")
+        render(modelWith(FridayState(conn = connected))) {
+            HomeScaffold(tab = HomeTabs.ASSISTANT, onTab = {}, dock = { AssistantComposer(draft) }, sessions = {}) {
+                androidx.compose.material3.Text("页面内容", androidx.compose.ui.Modifier.fillMaxSize())
+            }
+        }
+        compose.onNodeWithContentDescription("语音输入").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("停止听写").assertIsDisplayed()
+        compose.onNodeWithContentDescription(VOICE_WAVE_DESCRIPTION).assertIsDisplayed()
+        val shadow = org.robolectric.shadow.api.Shadow.extract<org.robolectric.shadows.ShadowSpeechRecognizer>(
+            org.robolectric.shadows.ShadowSpeechRecognizer.getLatestSpeechRecognizer()
+        )
+        fun words(text: String) = android.os.Bundle().apply {
+            putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf(text))
+        }
+        compose.runOnIdle {
+            shadow.triggerOnReadyForSpeech(android.os.Bundle())
+            shadow.triggerOnPartialResults(words("今天"))
+        }
+        compose.waitForIdle()
+        assertEquals("今天", draft.input)
+        compose.onNodeWithContentDescription("停止听写").assertIsDisplayed()
+        compose.runOnIdle { shadow.triggerOnResults(words("今天天气不错")) }
+        compose.waitForIdle()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(500))
+        compose.waitForIdle()
+        assertEquals("今天天气不错", draft.input)
+        // 说完一句：还在听（底行是音波、按钮是停止听写），不是发送
+        compose.onNodeWithContentDescription("停止听写").assertIsDisplayed()
+        compose.onNodeWithContentDescription(VOICE_WAVE_DESCRIPTION).assertIsDisplayed()
+        assertNoDescription("发送")
+        compose.onNodeWithContentDescription("停止听写").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed()
+        assertNoDescription(VOICE_WAVE_DESCRIPTION)
+    }
+
+    @Test
     fun `输入框按发送、话筒不丢焦点，点框外面才收`() {
         val text = mutableStateOf("")
         val sent = mutableListOf<String>()

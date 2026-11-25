@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -77,6 +78,10 @@ internal class Dictation(
     private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
 
+    /** 日志里认是哪一个（输入框的语音状态、这次听写） */
+    private val tag = "d${System.identityHashCode(this).toString(16)}/v${System.identityHashCode(input).toString(16)}"
+    private fun log(what: String) = Log.i(LOG_TAG, "$tag $what")
+
     /** 用户还要听（没按停） */
     private var wanted = false
 
@@ -139,6 +144,7 @@ internal class Dictation(
         input.listening = true
         input.level = 0f
         onBegin()
+        log("开始")
         recognizer.setRecognitionListener(listener)
         main.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
         listen()
@@ -147,6 +153,7 @@ internal class Dictation(
     /** 再按一下：马上退出在听；最后那段的结果随后到了照样写进去 */
     fun stop() {
         if (!running || !wanted) return
+        log("按了停（回过话 $answered）")
         wanted = false
         input.listening = false
         input.level = 0f
@@ -179,7 +186,16 @@ internal class Dictation(
     /** 说完一段（或者没听到话）：还要听就接着开下一段 */
     private fun next() {
         if (!running) return
-        if (wanted) main.postDelayed({ if (running && wanted) listen() }, RESTART_DELAY_MS) else end()
+        if (wanted) {
+            main.postDelayed({
+                if (running && wanted) {
+                    log("接着听下一段")
+                    listen()
+                }
+            }, RESTART_DELAY_MS)
+        } else {
+            end()
+        }
     }
 
     private fun write() {
@@ -210,6 +226,7 @@ internal class Dictation(
 
     private fun end() {
         if (!running) return
+        log("收掉")
         running = false
         wanted = false
         main.removeCallbacks(connectTimeout)
@@ -262,6 +279,7 @@ internal class Dictation(
             if (!running) return
             busyRetries = 0
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+            log("一段说完：${text?.length ?: -1} 字，在听 ${input.listening}")
             // 这段的最终结果替掉 partial；没给结果就留着听到的一半
             if (!text.isNullOrBlank()) {
                 pulse(text.length - partial.length)
@@ -273,6 +291,7 @@ internal class Dictation(
 
         override fun onError(error: Int) {
             heard()
+            log("出错 $error（还要听 $wanted）")
             if (!running) return
             commitPartial()
             when {
@@ -304,6 +323,9 @@ internal class Dictation(
 
         /** 不报音量的识别服务上，出字后音波跳起来这么久再落 */
         const val PULSE_MS = 220L
+
+        /** logcat 里的标签（真机上查听写的来龙去脉：adb logcat -s FridayVoice） */
+        const val LOG_TAG = "FridayVoice"
     }
 }
 
@@ -388,7 +410,11 @@ fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
         }
     }
     DisposableEffect(Unit) {
-        onDispose { dictation.release() }
+        Log.i(Dictation.LOG_TAG, "输入框的语音键 v${System.identityHashCode(voice).toString(16)} 进来了")
+        onDispose {
+            Log.i(Dictation.LOG_TAG, "输入框的语音键 v${System.identityHashCode(voice).toString(16)} 走了")
+            dictation.release()
+        }
     }
     return voice
 }
