@@ -881,10 +881,26 @@ class FridayClient(
         }
     }
 
-    /** 改助手设置里的一项（assistant.settings.update）：名字、推什么、空闲多久提醒…… */
+    /**
+     * 改助手设置里的一项（assistant.settings.update）：名字、推什么、空闲多久提醒、随身模式……
+     * 先在本地改、开关马上跟着变；主机回的整份设置到了以它为准（[assistantWithConfig]）；没送出去退回。
+     * 以前只等主机推 assistant.state 来盖：那只在助手页开着（订了 assistant.subscribe）时才推，设置页上点了开关一直不动，
+     * 看着像打不开（2026-11-25 随身模式，主机其实已经开了）
+     */
     suspend fun updateAssistantConfig(key: String, value: kotlinx.serialization.json.JsonElement) {
         val rpc = rpc ?: throw Exception("未连接")
-        rpc.request("assistant.settings.update", buildJsonObject { put(key, value) })
+        val before = state.value.assistant
+        val change = buildJsonObject { put(key, value) }
+        state.value = state.value.copy(assistant = assistantWithConfig(before, changes = change))
+        val result = try {
+            rpc.request("assistant.settings.update", change)
+        } catch (e: Exception) {
+            state.value = state.value.copy(assistant = before)
+            throw e
+        }
+        ((result as? JsonObject)?.get("config") as? JsonObject)?.let { confirmed ->
+            state.value = state.value.copy(assistant = assistantWithConfig(state.value.assistant, confirmed = confirmed))
+        }
     }
 
     /** 回执卡上的「批准 / 拒绝」：转给那台机器（assistant.resolveApproval） */
@@ -1169,4 +1185,19 @@ class FridayClient(
         refreshActivities()
         return result
     }
+}
+
+/**
+ * 改了助手设置以后手上那份的样子：[changes] 先合进现有的设置（主机回话之前开关就跟着变）；
+ * 主机回的整份 [confirmed] 到了以它为准——旧主机不认的项回的里没有，开关就回去。没读到过助手的不动
+ */
+internal fun assistantWithConfig(
+    current: AssistantState?,
+    changes: JsonObject? = null,
+    confirmed: JsonObject? = null,
+): AssistantState? {
+    current ?: return null
+    val raw = confirmed ?: current.config.raw?.let { JsonObject(it + (changes ?: JsonObject(emptyMap()))) } ?: return current
+    val config = AssistantConfig.fromJson(raw)
+    return current.copy(config = config, enabled = if (raw.containsKey("enabled")) config.enabled else current.enabled)
 }
