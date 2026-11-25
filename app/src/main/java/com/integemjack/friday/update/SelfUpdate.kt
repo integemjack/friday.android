@@ -54,18 +54,60 @@ object SelfUpdate {
 
     val updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
 
-    /** 查最新 Release；失败返回 null */
+    /**
+     * 查最新 Release；失败返回 null。先问 GitHub 接口（带版本说明、大小）；接口不通——尤其是被限流
+     * （403 / 429：不登录时每个出口 IP 每小时只给 60 次，路由器上的代理、公司网这类很多人共用的出口很快就用完，
+     * 2026-11-25 小米 17 就这样卡在 1.0.30 半个多月）——改走网页 [fromRedirect]，那个不算接口次数
+     */
     suspend fun fetchLatest(): Release? = withContext(Dispatchers.IO) {
-        runCatching {
+        val api = runCatching {
             val conn = URL(API_LATEST).openConnection() as HttpURLConnection
             conn.connectTimeout = 15_000
             conn.readTimeout = 20_000
             conn.setRequestProperty("Accept", "application/vnd.github+json")
-            if (conn.responseCode != 200) return@withContext null
-            val body = conn.inputStream.bufferedReader().readText()
-            conn.disconnect()
-            parseRelease(body)
+            try {
+                if (conn.responseCode == 200) conn.inputStream.bufferedReader().readText() else null
+            } finally {
+                conn.disconnect()
+            }
         }.getOrNull()
+        // 接口回了 200 就以它为准（安装包还没传上去时是 null：等下一次查，别去下一个还没有的包）
+        if (api != null) parseRelease(api) else fromRedirect()
+    }
+
+    /**
+     * 接口用不了时的退路：网页 releases/latest 会 302 跳到 …/releases/tag/v1.0.38，从跳转地址拿版本；
+     * 安装包的名字是 CI 定死的 friday-android-v<版本>.apk（.github/workflows/release.yml）。没有版本说明和大小
+     * （下载时按回来的 Content-Length 算进度）
+     */
+    private fun fromRedirect(): Release? = runCatching {
+        val conn = URL(PAGE_URL).openConnection() as HttpURLConnection
+        conn.instanceFollowRedirects = false
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 20_000
+        try {
+            releaseFromLocation(if (conn.responseCode in 300..399) conn.getHeaderField("Location") else null)
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrNull()
+
+    /** 网页 releases/latest 跳去的地址（…/releases/tag/v1.0.38）→ 那个版本；认不出是 null */
+    internal fun releaseFromLocation(location: String?): Release? {
+        val tag = location?.substringAfter("/releases/tag/", "")
+            ?.substringBefore('?')?.substringBefore('#')?.trim('/')
+            ?.takeIf { it.length > 1 && it.startsWith("v") && it.drop(1).all { c -> c.isDigit() || c == '.' } }
+            ?: return null
+        val base = "https://github.com/$REPO_OWNER/$REPO_NAME/releases"
+        return Release(
+            tag = tag,
+            version = tag.removePrefix("v"),
+            notes = "",
+            apkUrl = "$base/download/$tag/friday-android-$tag.apk",
+            apkSize = 0L,
+            htmlUrl = "$base/tag/$tag",
+            publishedAt = "",
+        )
     }
 
     internal fun parseRelease(body: String): Release? {
