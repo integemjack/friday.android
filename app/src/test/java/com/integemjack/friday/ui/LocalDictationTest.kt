@@ -116,18 +116,22 @@ class LocalDictationTest {
         val draft = ComposerDraft("")
         val notices = mutableListOf<String>()
         var ended = 0
-        LocalDictation(voice, { draft }, engine = { null }, mic = { error("不该开麦克风") }, onEnd = { ended++ }, notify = { notices += it }, worker = { it.run() }).start()
+        // 麦克风先开着录；模型加载不了：麦克风关掉、收掉说一声
+        val opened = FakeMic(listOf(0.3f), {})
+        LocalDictation(voice, { draft }, engine = { null }, mic = { opened }, onEnd = { ended++ }, notify = { notices += it }, worker = { it.run() }).start()
         looper.idle()
         assertFalse(voice.listening)
         assertEquals(1, ended)
+        assertTrue(opened.stopped)
         assertTrue(notices.single().startsWith("本地语音识别用不了"))
 
+        // 麦克风用不了：模型都不用加载
         notices.clear()
-        val session = FakeSession(emptyList(), "")
-        LocalDictation(voice, { draft }, engine = { AsrEngine { session } }, mic = { FakeMic(emptyList(), {}, starts = false) }, notify = { notices += it }, worker = { it.run() }).start()
+        var loads = 0
+        LocalDictation(voice, { draft }, engine = { loads++; null }, mic = { FakeMic(emptyList(), {}, starts = false) }, notify = { notices += it }, worker = { it.run() }).start()
         looper.idle()
         assertFalse(voice.listening)
-        assertTrue(session.released)
+        assertEquals(0, loads)
         assertTrue(notices.single().startsWith("麦克风用不了"))
     }
 
@@ -144,6 +148,46 @@ class LocalDictationTest {
         assertFalse(voice.listening)
         assertEquals(null, voice.hint)
         assertTrue(started != null)
+    }
+
+    @Test
+    fun `模型加载要几秒：先录着攒起来，加载好了一起认，开头说的不丢；音波一开始就动`() {
+        val voice = VoiceInput {}
+        val draft = ComposerDraft("")
+        lateinit var dictation: LocalDictation
+        var loader: Runnable? = null
+        val session = FakeSession(
+            listOf("明" to false, "明天" to false, "明天下午" to false, "明天下午三点" to false, "明天下午三点开会" to false),
+            tail = "明天下午三点开会。",
+        )
+        var hintWhileLoading: String? = "没看"
+        val mic = object : MicSource {
+            var reads = 0
+            override fun start() = true
+            override fun read(buffer: FloatArray): Int {
+                reads++
+                // 前三块录的时候模型还在加载；第三块之后加载好
+                if (reads == 3) {
+                    hintWhileLoading = voice.hint
+                    loader!!.run()
+                }
+                if (reads > 5) dictation.stop()
+                for (i in buffer.indices) buffer[i] = if (i % 2 == 0) 0.3f else -0.3f
+                return buffer.size
+            }
+            override fun stop() {}
+        }
+        var calls = 0
+        dictation = LocalDictation(
+            voice, { draft }, engine = { AsrEngine { session } }, mic = { mic },
+            // 第一个是录音的那条（直接跑），第二个是加载模型的那条（攒到第三块时才跑完）
+            worker = { r -> if (calls++ == 0) r.run() else loader = r },
+        )
+        dictation.start()
+        looper.idle()
+        assertEquals("正在准备本地识别…", hintWhileLoading)
+        assertEquals("加载前录的三块也喂进去了", mic.reads, session.fed)
+        assertEquals("明天下午三点开会。", draft.input)
     }
 
     @Test

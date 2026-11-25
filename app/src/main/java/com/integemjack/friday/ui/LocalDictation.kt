@@ -5,7 +5,9 @@ import android.os.Looper
 import android.util.Log
 import com.integemjack.friday.speech.AsrEngine
 import com.integemjack.friday.wake.MicSource
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.log10
 import kotlin.math.sqrt
 
@@ -21,7 +23,8 @@ internal interface VoiceEngine {
  * 每 [CHUNK_MS] 毫秒一块——算这块的音量给音波（真的麦克风音量），喂给本地的流式识别（[engine]，sherpa-onnx），
  * 正在说的这句实时写进框里；停顿够长算一句说完，留下、接着认下一句；再按一下停：剩下的认完写进去。
  *
- * 录音和识别在一条后台线程上（[worker]），框里的字、音量、状态都回主线程改。加载模型要一两秒：这期间框里写「正在准备」。
+ * 录音和识别在一条后台线程上（[worker]），加载模型另起一条；框里的字、音量、状态都回主线程改。
+ * 加载模型时（第一次要几秒）框里写「正在准备」，录音不停、攒着，加载好了一起认。
  */
 internal class LocalDictation(
     private val input: VoiceInput,
@@ -82,24 +85,30 @@ internal class LocalDictation(
         end(run)
     }
 
+    /**
+     * 后台：先开麦克风，边录边加载模型（第一次加载要几秒，小米 10 上约 5.5 秒）——这几秒说的话攒着，加载好了一起喂，
+     * 不丢；音波从一开始就跟着声音动。之后每块：音量给音波、喂给识别、正在说的写进框里，一句说完留下接着认下一句
+     */
     private fun loop(id: Int) {
-        val engine = engine()
-        if (engine == null) {
-            post(id) { fail("本地语音识别用不了（模型加载失败）") }
-            return
-        }
-        val session = engine.session()
         val mic = mic()
         if (!mic.start()) {
-            session.release()
             post(id) { fail("麦克风用不了（可能在打电话、别的 App 在录音）") }
             return
         }
-        post(id) { input.hint = null }
+        val loaded = AtomicReference<AsrEngine?>(null)
+        val loading = CountDownLatch(1)
+        worker(Runnable {
+            try {
+                loaded.set(engine())
+            } finally {
+                loading.countDown()
+            }
+        })
         val buffer = FloatArray(CHUNK_SAMPLES)
-        var last = ""
         try {
-            while (wanted.get()) {
+            // 模型还在加载：录下来的攒着（最多 [MAX_PENDING_CHUNKS] 块，加载卡住了别无限攒）
+            val pending = ArrayDeque<FloatArray>()
+            while (wanted.get() && loading.count > 0) {
                 val n = mic.read(buffer)
                 if (n <= 0) {
                     post(id) { fail("麦克风断了") }
@@ -107,28 +116,58 @@ internal class LocalDictation(
                 }
                 val level = speechLevel(buffer, n)
                 post(id) { input.level = level }
-                session.accept(buffer, n)
-                val text = session.text()
-                if (session.endpoint()) {
-                    // 一句说完：留下，接着认下一句
-                    session.reset()
-                    last = ""
-                    if (text.isNotBlank()) post(id) { commit(text) }
-                } else if (text != last) {
-                    last = text
-                    post(id) { show(text) }
-                }
+                pending.addLast(buffer.copyOf(n))
+                if (pending.size > MAX_PENDING_CHUNKS) pending.removeFirst()
             }
-            // 按了停：剩下的认完
-            mic.stop()
-            val tail = session.finish()
-            post(id) {
-                if (tail.isNotBlank()) commit(tail) else commit(partial)
-                end(id)
+            loading.await()
+            val engine = loaded.get()
+            if (engine == null) {
+                post(id) { fail("本地语音识别用不了（模型加载失败）") }
+                return
+            }
+            val session = engine.session()
+            try {
+                post(id) { input.hint = null }
+                var last = ""
+                fun feed(chunk: FloatArray, count: Int) {
+                    session.accept(chunk, count)
+                    val text = session.text()
+                    if (session.endpoint()) {
+                        // 一句说完：留下，接着认下一句
+                        session.reset()
+                        last = ""
+                        if (text.isNotBlank()) post(id) { commit(text) }
+                    } else if (text != last) {
+                        last = text
+                        post(id) { show(text) }
+                    }
+                }
+                while (pending.isNotEmpty()) {
+                    val chunk = pending.removeFirst()
+                    feed(chunk, chunk.size)
+                }
+                while (wanted.get()) {
+                    val n = mic.read(buffer)
+                    if (n <= 0) {
+                        post(id) { fail("麦克风断了") }
+                        return
+                    }
+                    val level = speechLevel(buffer, n)
+                    post(id) { input.level = level }
+                    feed(buffer, n)
+                }
+                // 按了停：剩下的认完
+                mic.stop()
+                val tail = session.finish()
+                post(id) {
+                    if (tail.isNotBlank()) commit(tail) else commit(partial)
+                    end(id)
+                }
+            } finally {
+                session.release()
             }
         } finally {
             mic.stop()
-            session.release()
         }
     }
 
@@ -178,6 +217,9 @@ internal class LocalDictation(
         /** 一块多长（音波每块动一下：50 毫秒够跟手） */
         const val CHUNK_MS = 50
         const val CHUNK_SAMPLES = 16_000 * CHUNK_MS / 1000
+
+        /** 模型加载时最多攒这么多块（30 秒） */
+        const val MAX_PENDING_CHUNKS = 30_000 / CHUNK_MS
     }
 }
 
