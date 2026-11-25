@@ -2252,6 +2252,7 @@ class UiRenderTest {
         text: androidx.compose.runtime.MutableState<String>,
         sent: MutableList<String>,
         voice: VoiceInput? = null,
+        summary: String? = null,
     ) = render(modelWith(FridayState(conn = connected))) {
         HomeScaffold(
             tab = HomeTabs.ASSISTANT,
@@ -2263,6 +2264,8 @@ class UiRenderTest {
                     placeholder = "说点什么",
                     onSend = { sent += text.value; text.value = "" },
                     voice = voice,
+                    onMore = if (summary != null) ({}) else null,
+                    summary = summary,
                 )
             },
             sessions = {},
@@ -2272,6 +2275,29 @@ class UiRenderTest {
                 androidx.compose.ui.Modifier.fillMaxSize(),
             )
         }
+    }
+
+    @Test
+    fun `听写时底行写模型的地方换成音波，停了换回来；框里的字跟着变`() {
+        val text = mutableStateOf("")
+        val sent = mutableListOf<String>()
+        val voice = VoiceInput {}
+        renderComposer(text, sent, voice = voice, summary = "hy4flash-free · 按需派 · 思考 开启")
+        compose.onNodeWithText("hy4flash-free · 按需派 · 思考 开启").assertIsDisplayed()
+        assertNoDescription(VOICE_WAVE_DESCRIPTION)
+
+        compose.runOnIdle { voice.listening = true; voice.level = 0.6f }
+        compose.onNodeWithContentDescription(VOICE_WAVE_DESCRIPTION).assertIsDisplayed()
+        assertNoText("hy4flash-free · 按需派 · 思考 开启")
+        compose.onNodeWithContentDescription("停止听写").assertIsDisplayed()
+        compose.onNodeWithText("正在听，说吧…（说完再点一下右边的话筒停）").assertExists()
+        // 识别出来的字实时写进框里
+        compose.runOnIdle { text.value = "今天天气" }
+        compose.onNodeWithText("今天天气").assertExists()
+
+        compose.runOnIdle { voice.listening = false; voice.level = 0f }
+        compose.onNodeWithText("hy4flash-free · 按需派 · 思考 开启").assertIsDisplayed()
+        assertNoDescription(VOICE_WAVE_DESCRIPTION)
     }
 
     @Test

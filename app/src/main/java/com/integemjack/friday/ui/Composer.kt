@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
@@ -89,12 +90,13 @@ import java.util.UUID
  * 一整块圆角卡片，上下两行：
  * - 上面是多行输入
  * - 下面一行：左边「＋」（[onMore]：附件、模型、任务模式、思考模式、工作目录、视频通话都在它点出来的面板里），
- *   旁边一行小字 [summary] 写着现在用的模型 · 任务模式 · 思考（点它也是打开面板）；右边是动作按钮
+ *   旁边一行小字 [summary] 写着现在用的模型 · 任务模式 · 思考（点它也是打开面板；听写时换成滚动的音波 [VoiceWave]）；
+ *   右边是动作按钮
  *
  * 动作按钮按状态换：
  * - 在跑（[onStop] 不为空）→ 红色停止 / 打断；框里有话时旁边再多一颗 [runningSend]
  *   （会话页是「补充给智能体」：做完当前这一步就交给它，同桌面端 / Qt 的双键）
- * - 在听写（[voice] 在听）→ 主色的话筒，按一下停
+ * - 在听写（[voice] 在听）→ 主色的话筒，再按一下才停（一直听、说的话实时写进框里）
  * - [busy] → 转圈（附件还在传）
  * - 有话可发 → 发送
  * - 框里空着 → 话筒（[voice]：默认就是语音键）
@@ -234,7 +236,7 @@ fun Composer(
                     Box {
                         if (value.isEmpty()) {
                             Text(
-                                if (voice?.listening == true) "正在听，说吧…（说完点右边的话筒停）" else placeholder,
+                                if (voice?.listening == true) "正在听，说吧…（说完再点一下右边的话筒停）" else placeholder,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = scheme.onSurfaceVariant.copy(alpha = if (enabled) 0.85f else 0.6f),
                                 maxLines = 1,
@@ -255,8 +257,17 @@ fun Composer(
                     MoreButton(enabled = enabled, onClick = onMore)
                     Spacer(Modifier.width(6.dp))
                 }
-                // 现在用的模型 · 任务模式 · 思考：一行小字，点它也是打开面板
-                Text(
+                // 现在用的模型 · 任务模式 · 思考：一行小字，点它也是打开面板。
+                // 听写时这里换成跟着音量往左滚的音波（再按一下话筒才停，2026-11-25）
+                if (listening) {
+                    VoiceWave(
+                        level = { voice?.level ?: 0f },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(28.dp)
+                            .padding(horizontal = 4.dp),
+                    )
+                } else Text(
                     summary.orEmpty(),
                     style = MaterialTheme.typography.labelMedium,
                     color = scheme.onSurfaceVariant.copy(alpha = if (enabled) 0.85f else 0.5f),
