@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.SystemUpdate
@@ -81,10 +82,62 @@ fun SettingsScreen(onSwitchBot: () -> Unit = {}) {
         AccountCard(onSwitchBot)
         BackgroundCard()
         AssistantCard()
+        VoiceInputCard()
         UpdateCard()
         StorageCard()
         AboutCard()
         Spacer(Modifier.height(10.dp))
+    }
+}
+
+/**
+ * 语音输入（输入框的话筒）：本地流式识别的模型装没装、下到哪了。装好了话筒是本地的——自己录音、边说边出字、带标点；
+ * 没装好用手机自带的语音识别，第一次按话筒时自动在后台下，这里也能手动下 / 删
+ */
+@Composable
+private fun VoiceInputCard() {
+    val model = LocalAppModel.current
+    val state by model.asrModels.state.collectAsState()
+    FridayCard {
+        SectionTitle(icon = Icons.Filled.Mic, title = "语音输入")
+        Spacer(Modifier.height(6.dp))
+        val muted = MaterialTheme.colorScheme.onSurfaceVariant
+        when (val s = state) {
+            com.integemjack.friday.speech.LocalAsrModels.State.Ready -> {
+                Text(
+                    "本地识别已装好（${formatBytes(model.asrModels.installedBytes())}）：按输入框的话筒，自己录音、边说边出字、带标点，不联网。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = muted,
+                )
+                TextButton(onClick = { model.asrModels.delete() }) { Text("删除模型") }
+            }
+            is com.integemjack.friday.speech.LocalAsrModels.State.Downloading -> {
+                Text(
+                    "正在下载本地识别模型 ${(s.fraction * 100).toInt()}%（${formatBytes(s.read)} / ${formatBytes(s.total)}）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = muted,
+                )
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(progress = { s.fraction }, modifier = Modifier.fillMaxWidth())
+            }
+            com.integemjack.friday.speech.LocalAsrModels.State.Unpacking -> Text(
+                "模型下好了，正在装…",
+                style = MaterialTheme.typography.bodySmall,
+                color = muted,
+            )
+            is com.integemjack.friday.speech.LocalAsrModels.State.Failed -> {
+                Text(s.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = { model.downloadAsrModel() }) { Text("接着下") }
+            }
+            com.integemjack.friday.speech.LocalAsrModels.State.Missing -> {
+                Text(
+                    "还没装本地识别：话筒先用手机自带的语音识别（小米的说完一句才出字、不带标点）。下一个模型（约 130 MB）就能边说边出字、带标点、不联网。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = muted,
+                )
+                TextButton(onClick = { model.downloadAsrModel() }) { Text("下载本地识别模型") }
+            }
+        }
     }
 }
 

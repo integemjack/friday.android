@@ -182,6 +182,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.webrtc)
     implementation(libs.zxing.core)
+    // 本地语音识别模型是 sherpa-onnx 发的 tar.bz2：解压用（Java 自己没有 bzip2）
+    implementation(libs.commons.compress)
     // 语音唤醒：sherpa-onnx 关键词检测（文件顶上下载、校验）
     implementation(files(sherpaAar))
     testImplementation(libs.junit)

@@ -16,6 +16,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -43,6 +45,10 @@ class VoiceInput internal constructor(
 
     /** 麦克风音量 0–1（按钮跟着跳一跳、音波跟着滚） */
     var level by mutableFloatStateOf(0f)
+        internal set
+
+    /** 听着的时候框里空着时写的话（换掉「正在听，说吧…」）：正在准备本地识别、本地模型还在下载这些；null 用默认的 */
+    var hint by mutableStateOf<String?>(null)
         internal set
 
     fun toggle() = toggleFn()
@@ -74,7 +80,7 @@ internal class Dictation(
     private val notify: (String) -> Unit = {},
     /** 交给识别服务的「谁在用」（EXTRA_CALLING_PACKAGE） */
     private val callingPackage: String = "com.integemjack.friday",
-) {
+) : VoiceEngine {
     private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
 
@@ -118,6 +124,20 @@ internal class Dictation(
     private var levelsReported = false
     private val fade = Runnable { if (!levelsReported) input.level = 0f }
 
+    /**
+     * 这一段一直没动静：重开一段。小米一段收尾的 ASR_END 有时 0.4 秒后才到，赶上刚开的下一段就把它停了，
+     * 停了以后的空结果它又不回调（日志 onCallbackResults: param error）——这段永远等不到收尾，界面上还在听、其实早不听了
+     * （2026-11-25 1.0.38 小米 10 上实测）。[SEGMENT_STALL_MS] 里识别服务一个回调都没有就当这段丢了
+     */
+    private val segmentStall = Runnable {
+        if (!running || !wanted || segmentClosed) return@Runnable
+        log("这段 ${SEGMENT_STALL_MS / 1000} 秒没动静，重开")
+        segmentClosed = true
+        commitPartial()
+        runCatching { recognizer?.cancel() }
+        next(AFTER_SILENCE_DELAY_MS)
+    }
+
     private val connectTimeout = Runnable {
         if (running && !answered) {
             fail("语音识别没有回应：系统设置里选的语音识别服务可能用不了，或者它在等你同意它的条款")
@@ -127,7 +147,7 @@ internal class Dictation(
 
     val active: Boolean get() = running
 
-    fun start() {
+    override fun start() {
         // 刚按了停、还在等最后那段的结果时又按：那段不等了，重新开始
         if (running) {
             if (wanted) return
@@ -162,12 +182,13 @@ internal class Dictation(
     }
 
     /** 再按一下：马上退出在听；最后那段的结果随后到了照样写进去 */
-    fun stop() {
+    override fun stop() {
         if (!running || !wanted) return
         log("按了停（回过话 $answered）")
         wanted = false
         input.listening = false
         input.level = 0f
+        input.hint = null
         main.removeCallbacks(connectTimeout)
         if (!answered) {
             end()
@@ -178,12 +199,13 @@ internal class Dictation(
     }
 
     /** 离开页面：不管说到哪都收掉 */
-    fun release() = end()
+    override fun release() = end()
 
     private fun listen() {
         val recognizer = recognizer ?: return
         segmentClosed = false
         segments++
+        watchSegment()
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
@@ -196,8 +218,18 @@ internal class Dictation(
         runCatching { recognizer.startListening(intent) }.onFailure { fail("语音识别起不来（${it.message}）") }
     }
 
-    /** 说完一段（或者没听到话）：还要听就接着开下一段 */
-    private fun next() {
+    /** 这一段有动静：重新计时 */
+    private fun watchSegment() {
+        main.removeCallbacks(segmentStall)
+        main.postDelayed(segmentStall, SEGMENT_STALL_MS)
+    }
+
+    /**
+     * 说完一段（或者没听到话）：还要听就过 [delay] 毫秒接着开下一段。给了结果的等久一点（[AFTER_RESULT_DELAY_MS]）：
+     * 小米上一段收尾的 ASR_END 有时 0.4 秒后才到，开早了新的一段会被它停掉
+     */
+    private fun next(delay: Long) {
+        main.removeCallbacks(segmentStall)
         if (!running) return
         if (wanted) {
             main.postDelayed({
@@ -205,7 +237,7 @@ internal class Dictation(
                     log("接着听下一段")
                     listen()
                 }
-            }, RESTART_DELAY_MS)
+            }, delay)
         } else {
             end()
         }
@@ -245,8 +277,10 @@ internal class Dictation(
         main.removeCallbacks(connectTimeout)
         main.removeCallbacks(stopTimeout)
         main.removeCallbacks(fade)
+        main.removeCallbacks(segmentStall)
         input.listening = false
         input.level = 0f
+        input.hint = null
         runCatching { recognizer?.destroy() }
         recognizer = null
         target = null
@@ -259,6 +293,7 @@ internal class Dictation(
                 answered = true
                 main.removeCallbacks(connectTimeout)
             }
+            if (running && wanted && !segmentClosed) watchSegment()
         }
 
         override fun onReadyForSpeech(params: Bundle?) = heard()
@@ -308,7 +343,7 @@ internal class Dictation(
                 partial = text
             }
             commitPartial()
-            next()
+            next(AFTER_RESULT_DELAY_MS)
         }
 
         override fun onError(error: Int) {
@@ -321,7 +356,7 @@ internal class Dictation(
                 // 按了停：这段收尾时报的错不用管
                 !wanted -> end()
                 // 没听到话：接着听
-                error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> next()
+                error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> next(AFTER_SILENCE_DELAY_MS)
                 // 刚结束一段马上开下一段，有的识别服务还没收拾好：等一下再开，连着几次都不行就算了
                 (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT) && busyRetries < MAX_BUSY_RETRIES -> {
                     busyRetries++
@@ -341,8 +376,14 @@ internal class Dictation(
         /** 按了停以后最多等最后那段的结果这么久 */
         const val STOP_GRACE_MS = 1_500L
 
-        /** 一段说完到开下一段 */
-        const val RESTART_DELAY_MS = 80L
+        /** 一段给了结果到开下一段（等小米上一段迟到的 ASR_END 过去：实测 13–423 毫秒） */
+        const val AFTER_RESULT_DELAY_MS = 700L
+
+        /** 一段没听到话（NO_MATCH / 超时）到开下一段 */
+        const val AFTER_SILENCE_DELAY_MS = 250L
+
+        /** 一段里识别服务这么久一个回调都没有：当这段丢了，重开（没人说话时小米 4–5 秒就自己收尾） */
+        const val SEGMENT_STALL_MS = 15_000L
         const val BUSY_RETRY_MS = 400L
         const val MAX_BUSY_RETRIES = 4
 
@@ -395,6 +436,9 @@ internal fun dictationError(error: Int): String? = when (error) {
 /**
  * [draft] 是要写进去的那份草稿：开始听时记下框里原有的字，识别出来的接在后面
  * （中间不加空格：中文接中文；原来的末尾是英文字母才补一个空格）。
+ *
+ * 本地流式识别的模型装好了用 [LocalDictation]（自己录音、边说边出字、带标点）；还没装好就这次先用手机自带的
+ * （[Dictation]），后台下载模型，框里写着下到哪了，下好以后再按就是本地的
  */
 @Composable
 fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
@@ -402,35 +446,72 @@ fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
     val model = LocalAppModel.current
     val current by rememberUpdatedState(draft)
     val holder = remember { DictationHolder() }
+    val asr by model.asrModels.state.collectAsState()
 
     val voice = remember {
         lateinit var self: VoiceInput
         self = VoiceInput { holder.toggle?.invoke() }
         self
     }
-    val dictation = remember(voice) {
+    fun begin() {
+        // 语音唤醒先把麦克风让出来（两边一起录，系统可能把听写那边静音）；正在念的停下（别把念的听进去）
+        model.wake.hold(WAKE_HOLD)
+        model.speaker.stop()
+    }
+    val notify = { message: String -> Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
+    val local = remember(voice) {
+        LocalDictation(
+            input = voice,
+            draft = { current },
+            engine = { model.asrEngines.acquire() },
+            mic = { com.integemjack.friday.wake.AudioRecordMic() },
+            onBegin = ::begin,
+            onEnd = {
+                model.wake.release(WAKE_HOLD)
+                model.asrEngines.done()
+            },
+            notify = notify,
+        )
+    }
+    val system = remember(voice) {
         Dictation(
             input = voice,
             draft = { current },
             available = { SpeechRecognizer.isRecognitionAvailable(context) },
             create = { runCatching { SpeechRecognizer.createSpeechRecognizer(context) }.getOrNull() },
-            // 语音唤醒先把麦克风让出来（两边一起录，系统可能把听写那边静音）；正在念的停下（别把念的听进去）
-            onBegin = {
-                model.wake.hold(WAKE_HOLD)
-                model.speaker.stop()
-            },
+            onBegin = ::begin,
             onEnd = { model.wake.release(WAKE_HOLD) },
-            notify = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() },
+            notify = notify,
             callingPackage = context.packageName,
         )
     }
+    // 用系统的听着、本地模型在下：框里写下到哪了
+    val fallbackHint = when (val state = asr) {
+        is com.integemjack.friday.speech.LocalAsrModels.State.Downloading ->
+            "正在听（本地识别模型下载中 ${(state.fraction * 100).toInt()}%，下好后边说边出字、带标点）"
+        com.integemjack.friday.speech.LocalAsrModels.State.Unpacking -> "正在听（本地识别模型快装好了）"
+        is com.integemjack.friday.speech.LocalAsrModels.State.Failed -> "正在听（本地识别模型没下好，下次按话筒再下）"
+        else -> null
+    }
+    SideEffect { if (holder.engine === system && voice.listening) voice.hint = fallbackHint }
+    fun startListening() {
+        if (model.asrModels.files() != null) {
+            holder.engine = local
+            local.start()
+        } else {
+            // 本地模型还没有：这次先用系统的，后台下模型
+            model.downloadAsrModel()
+            holder.engine = system
+            system.start()
+        }
+    }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) dictation.start() else Toast.makeText(context, "要用语音输入得给麦克风权限", Toast.LENGTH_SHORT).show()
+        if (granted) startListening() else Toast.makeText(context, "要用语音输入得给麦克风权限", Toast.LENGTH_SHORT).show()
     }
     holder.toggle = {
         when {
-            voice.listening -> dictation.stop()
-            hasMic(context) -> dictation.start()
+            voice.listening -> holder.engine?.stop()
+            hasMic(context) -> startListening()
             else -> permission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
@@ -438,7 +519,8 @@ fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
         Log.i(Dictation.LOG_TAG, "输入框的语音键 v${System.identityHashCode(voice).toString(16)} 进来了")
         onDispose {
             Log.i(Dictation.LOG_TAG, "输入框的语音键 v${System.identityHashCode(voice).toString(16)} 走了")
-            dictation.release()
+            local.release()
+            system.release()
         }
     }
     return voice
@@ -449,6 +531,9 @@ private const val WAKE_HOLD = "dictation"
 
 private class DictationHolder {
     var toggle: (() -> Unit)? = null
+
+    /** 这次用的哪种听写 */
+    var engine: VoiceEngine? = null
 }
 
 private fun hasMic(context: Context): Boolean =

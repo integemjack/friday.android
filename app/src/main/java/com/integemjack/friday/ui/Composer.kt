@@ -236,7 +236,7 @@ fun Composer(
                     Box {
                         if (value.isEmpty()) {
                             Text(
-                                if (voice?.listening == true) "正在听，说吧…（说完再点一下右边的话筒停）" else placeholder,
+                                if (voice?.listening == true) voice.hint ?: "正在听，说吧…（说完再点一下右边的话筒停）" else placeholder,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = scheme.onSurfaceVariant.copy(alpha = if (enabled) 0.85f else 0.6f),
                                 maxLines = 1,

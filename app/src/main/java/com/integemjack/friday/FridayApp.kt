@@ -134,6 +134,15 @@ class AppModel(private val app: Application) {
     /** 语音播报：停在助手页时它的新回复直接念；在后台时有调用等你确认，跟通知一起念一句 */
     val speaker = com.integemjack.friday.speech.BackgroundSpeaker(app, inAssistantCall = { call.state.value.inCall })
 
+    /** 语音键的本地流式识别：模型（第一次用时下载到 filesDir/asr）和加载好的识别器 */
+    val asrModels = com.integemjack.friday.speech.LocalAsrModels(java.io.File(app.filesDir, "asr"))
+    val asrEngines = com.integemjack.friday.speech.LocalAsrEngines(asrModels)
+
+    /** 后台下本地识别模型（已经在下、装好了就不动） */
+    fun downloadAsrModel() {
+        scope.launch(Dispatchers.IO) { asrModels.download() }
+    }
+
     /** 「待确认」通知：灵动岛（实时活动）+ 通知上直接答 */
     val attention = com.integemjack.friday.notify.AttentionNotifier(
         app,

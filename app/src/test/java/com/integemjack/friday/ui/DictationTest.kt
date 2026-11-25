@@ -66,8 +66,8 @@ class DictationTest {
         looper.idle()
     }
 
-    /** 一段说完以后过一会儿接着开下一段 */
-    private fun nextSegment() = looper.idleFor(Duration.ofMillis(Dictation.RESTART_DELAY_MS + 10))
+    /** 一段说完以后过一会儿接着开下一段（给了结果的等得最久） */
+    private fun nextSegment() = looper.idleFor(Duration.ofMillis(Dictation.AFTER_RESULT_DELAY_MS + 10))
 
     @Test
     fun `一直听：一段段接起来实时写进框里，没听到话也接着听，再按一下才停`() {
@@ -138,6 +138,47 @@ class DictationTest {
         assertEquals("原有的话，明天下午三点", draft.input)
         assertTrue(voice.listening)
         assertTrue(notices.isEmpty())
+    }
+
+    @Test
+    fun `给了结果后等一会儿再开下一段（小米上一段迟到的收尾会停掉开早了的那段）`() {
+        start()
+        val shadow = recognizer()
+        shadow.triggerOnReadyForSpeech(Bundle())
+        shadow.triggerOnResults(words("明天下午3点提醒我开会"))
+        looper.idleFor(Duration.ofMillis(300))
+        assertEquals("300 毫秒时还没开", 1, dictation.segments)
+        looper.idleFor(Duration.ofMillis(Dictation.AFTER_RESULT_DELAY_MS))
+        assertEquals(2, dictation.segments)
+        // 没听到话的开得快
+        shadow.triggerOnError(SpeechRecognizer.ERROR_NO_MATCH)
+        looper.idleFor(Duration.ofMillis(Dictation.AFTER_SILENCE_DELAY_MS + 10))
+        assertEquals(3, dictation.segments)
+    }
+
+    @Test
+    fun `一段一直没动静（小米停了却不回调）：重开一段，还在听`() {
+        start()
+        val shadow = recognizer()
+        shadow.triggerOnReadyForSpeech(Bundle())
+        shadow.triggerOnPartialResults(words("顺便把"))
+        // 之后一个回调都没有：15 秒到了重开，听到的一半留着
+        looper.idleFor(Duration.ofMillis(Dictation.SEGMENT_STALL_MS - 100))
+        assertEquals(1, dictation.segments)
+        looper.idleFor(Duration.ofMillis(100 + Dictation.AFTER_SILENCE_DELAY_MS + 10))
+        assertEquals(2, dictation.segments)
+        assertTrue(voice.listening)
+        assertEquals("原有的话，顺便把", draft.input)
+        // 新的这段照常接
+        shadow.triggerOnResults(words("会议纪要发给我"))
+        assertEquals("原有的话，顺便把会议纪要发给我", draft.input)
+        // 有动静就重新计时：一直有音量不算没动静
+        nextSegment()
+        repeat(4) {
+            looper.idleFor(Duration.ofMillis(Dictation.SEGMENT_STALL_MS / 2))
+            shadow.triggerOnRmsChanged(3f)
+        }
+        assertEquals(3, dictation.segments)
     }
 
     @Test
