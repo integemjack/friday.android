@@ -117,8 +117,10 @@ class LocalDictationTest {
         val notices = mutableListOf<String>()
         var ended = 0
         // 麦克风先开着录；模型加载不了：麦克风关掉、收掉说一声
-        val opened = FakeMic(listOf(0.3f), {})
-        LocalDictation(voice, { draft }, engine = { null }, mic = { opened }, onEnd = { ended++ }, notify = { notices += it }, worker = { it.run() }).start()
+        lateinit var broken: LocalDictation
+        val opened = FakeMic(listOf(0.3f), { broken.stop() })
+        broken = LocalDictation(voice, { draft }, engine = { null }, mic = { opened }, onEnd = { ended++ }, notify = { notices += it }, worker = { it.run() })
+        broken.start()
         looper.idle()
         assertFalse(voice.listening)
         assertEquals(1, ended)
@@ -151,42 +153,65 @@ class LocalDictationTest {
     }
 
     @Test
-    fun `模型加载要几秒：先录着攒起来，加载好了一起认，开头说的不丢；音波一开始就动`() {
+    fun `录音不等识别：加载模型、追认的时候一直在录，录下的都认、开头说的不丢`() {
         val voice = VoiceInput {}
         val draft = ComposerDraft("")
         lateinit var dictation: LocalDictation
-        var loader: Runnable? = null
-        val session = FakeSession(
-            listOf("明" to false, "明天" to false, "明天下午" to false, "明天下午三点" to false, "明天下午三点开会" to false),
-            tail = "明天下午三点开会。",
-        )
-        var hintWhileLoading: String? = "没看"
+        val main = android.os.Handler(Looper.getMainLooper())
+        // 录满 10 块模型才加载好、第一块认到一半要等录满 20 块：录音要是等着识别就卡死（等不到）
+        val tenRead = java.util.concurrent.CountDownLatch(1)
+        val twentyRead = java.util.concurrent.CountDownLatch(1)
+        var loadedInTime = false
+        var caughtUpInTime = false
+        val session = object : AsrSession {
+            val fed = java.util.concurrent.atomic.AtomicInteger()
+            override fun accept(samples: FloatArray, count: Int) {
+                if (fed.getAndIncrement() == 0) caughtUpInTime = twentyRead.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            override fun text() = if (fed.get() < 3) "明天" else "明天下午三点开会"
+            override fun endpoint() = false
+            override fun reset() {}
+            override fun finish() = "明天下午三点开会。"
+            override fun release() {}
+        }
         val mic = object : MicSource {
-            var reads = 0
+            val reads = java.util.concurrent.atomic.AtomicInteger()
+            @Volatile var stopped = false
             override fun start() = true
             override fun read(buffer: FloatArray): Int {
-                reads++
-                // 前三块录的时候模型还在加载；第三块之后加载好
-                if (reads == 3) {
-                    hintWhileLoading = voice.hint
-                    loader!!.run()
+                Thread.sleep(1)
+                when (reads.incrementAndGet()) {
+                    10 -> tenRead.countDown()
+                    20 -> twentyRead.countDown()
+                    30 -> main.post { dictation.stop() }
                 }
-                if (reads > 5) dictation.stop()
-                for (i in buffer.indices) buffer[i] = if (i % 2 == 0) 0.3f else -0.3f
+                buffer.fill(0.3f)
                 return buffer.size
             }
-            override fun stop() {}
+            override fun stop() {
+                stopped = true
+            }
         }
-        var calls = 0
         dictation = LocalDictation(
-            voice, { draft }, engine = { AsrEngine { session } }, mic = { mic },
-            // 第一个是录音的那条（直接跑），第二个是加载模型的那条（攒到第三块时才跑完）
-            worker = { r -> if (calls++ == 0) r.run() else loader = r },
+            voice, { draft },
+            engine = {
+                loadedInTime = tenRead.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                AsrEngine { session }
+            },
+            mic = { mic },
+            worker = { Thread(it).start() },
         )
         dictation.start()
-        looper.idle()
-        assertEquals("正在准备本地识别…", hintWhileLoading)
-        assertEquals("加载前录的三块也喂进去了", mic.reads, session.fed)
+        val deadline = System.currentTimeMillis() + 10_000
+        while (dictation.active && System.currentTimeMillis() < deadline) {
+            looper.idle()
+            Thread.sleep(5)
+        }
+        assertTrue("加载模型时录音没停", loadedInTime)
+        assertTrue("追认时录音没停", caughtUpInTime)
+        assertFalse(dictation.active)
+        assertTrue(mic.stopped)
+        assertEquals("录下的都认了", mic.reads.get(), session.fed.get())
         assertEquals("明天下午三点开会。", draft.input)
     }
 

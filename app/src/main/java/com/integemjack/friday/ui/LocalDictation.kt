@@ -5,9 +5,8 @@ import android.os.Looper
 import android.util.Log
 import com.integemjack.friday.speech.AsrEngine
 import com.integemjack.friday.wake.MicSource
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.log10
 import kotlin.math.sqrt
 
@@ -23,8 +22,8 @@ internal interface VoiceEngine {
  * 每 [CHUNK_MS] 毫秒一块——算这块的音量给音波（真的麦克风音量），喂给本地的流式识别（[engine]，sherpa-onnx），
  * 正在说的这句实时写进框里；停顿够长算一句说完，留下、接着认下一句；再按一下停：剩下的认完写进去。
  *
- * 录音和识别在一条后台线程上（[worker]），加载模型另起一条；框里的字、音量、状态都回主线程改。
- * 加载模型时（第一次要几秒）框里写「正在准备」，录音不停、攒着，加载好了一起认。
+ * 录音、识别各一条后台线程（[worker]），中间用队列接着：录音一直读不等识别，识别慢了（加载模型、追认）就攒着；
+ * 框里的字、音量、状态都回主线程改。加载模型时（第一次要几秒）框里写「正在准备」。
  */
 internal class LocalDictation(
     private val input: VoiceInput,
@@ -86,8 +85,10 @@ internal class LocalDictation(
     }
 
     /**
-     * 后台：先开麦克风，边录边加载模型（第一次加载要几秒，小米 10 上约 5.5 秒）——这几秒说的话攒着，加载好了一起喂，
-     * 不丢；音波从一开始就跟着声音动。之后每块：音量给音波、喂给识别、正在说的写进框里，一句说完留下接着认下一句
+     * 后台：先开麦克风，录音另起一条线程（[record]）一直读、不等识别——第一次加载模型要几秒（小米 10 上约 5.5 秒），
+     * 加载好了还要追认攒着的这几秒；录音缓冲只有零点几秒，读的停下来等识别就会溢出丢音（2026-11-25 实测：加载时
+     * 说的认出来了，追认那会儿说的「顺便看看票价多少」只剩一个「说」）。这条线程加载模型、按顺序认录下的每一块：
+     * 正在说的写进框里，一句说完留下接着认下一句；录音停了（按了停）把剩下的认完
      */
     private fun loop(id: Int) {
         val mic = mic()
@@ -95,80 +96,76 @@ internal class LocalDictation(
             post(id) { fail("麦克风用不了（可能在打电话、别的 App 在录音）") }
             return
         }
-        val loaded = AtomicReference<AsrEngine?>(null)
-        val loading = CountDownLatch(1)
-        worker(Runnable {
-            try {
-                loaded.set(engine())
-            } finally {
-                loading.countDown()
+        val chunks = LinkedBlockingQueue<Chunk>()
+        worker(Runnable { record(id, mic, chunks) })
+        val engine = engine()
+        if (engine == null) {
+            wanted.set(false)
+            post(id) { fail("本地语音识别用不了（模型加载失败）") }
+            return
+        }
+        val session = engine.session()
+        try {
+            post(id) { input.hint = null }
+            var last = ""
+            while (true) {
+                val chunk = when (val next = chunks.take()) {
+                    is Chunk.Audio -> next.samples
+                    Chunk.Broken -> {
+                        post(id) { fail("麦克风断了") }
+                        return
+                    }
+                    Chunk.End -> break
+                }
+                session.accept(chunk, chunk.size)
+                val text = session.text()
+                if (session.endpoint()) {
+                    // 一句说完：留下，接着认下一句
+                    session.reset()
+                    last = ""
+                    if (text.isNotBlank()) post(id) { commit(text) }
+                } else if (text != last) {
+                    last = text
+                    post(id) { show(text) }
+                }
             }
-        })
+            // 按了停、录下的都认了：剩下的认完
+            val tail = session.finish()
+            post(id) {
+                if (tail.isNotBlank()) commit(tail) else commit(partial)
+                end(id)
+            }
+        } finally {
+            session.release()
+        }
+    }
+
+    /** 录音线程：每块算音量给音波（马上，不等识别）、放进 [chunks]；不用听了关麦克风、放个 [Chunk.End] */
+    private fun record(id: Int, mic: MicSource, chunks: LinkedBlockingQueue<Chunk>) {
         val buffer = FloatArray(CHUNK_SAMPLES)
         try {
-            // 模型还在加载：录下来的攒着（最多 [MAX_PENDING_CHUNKS] 块，加载卡住了别无限攒）
-            val pending = ArrayDeque<FloatArray>()
-            while (wanted.get() && loading.count > 0) {
+            while (wanted.get()) {
                 val n = mic.read(buffer)
                 if (n <= 0) {
-                    post(id) { fail("麦克风断了") }
+                    chunks.put(Chunk.Broken)
                     return
                 }
                 val level = speechLevel(buffer, n)
                 post(id) { input.level = level }
-                pending.addLast(buffer.copyOf(n))
-                if (pending.size > MAX_PENDING_CHUNKS) pending.removeFirst()
+                chunks.put(Chunk.Audio(buffer.copyOf(n)))
+                // 识别一直追不上（加载卡住了）：最多攒 [MAX_PENDING_CHUNKS] 块，丢最早的
+                while (chunks.size > MAX_PENDING_CHUNKS) chunks.poll()
             }
-            loading.await()
-            val engine = loaded.get()
-            if (engine == null) {
-                post(id) { fail("本地语音识别用不了（模型加载失败）") }
-                return
-            }
-            val session = engine.session()
-            try {
-                post(id) { input.hint = null }
-                var last = ""
-                fun feed(chunk: FloatArray, count: Int) {
-                    session.accept(chunk, count)
-                    val text = session.text()
-                    if (session.endpoint()) {
-                        // 一句说完：留下，接着认下一句
-                        session.reset()
-                        last = ""
-                        if (text.isNotBlank()) post(id) { commit(text) }
-                    } else if (text != last) {
-                        last = text
-                        post(id) { show(text) }
-                    }
-                }
-                while (pending.isNotEmpty()) {
-                    val chunk = pending.removeFirst()
-                    feed(chunk, chunk.size)
-                }
-                while (wanted.get()) {
-                    val n = mic.read(buffer)
-                    if (n <= 0) {
-                        post(id) { fail("麦克风断了") }
-                        return
-                    }
-                    val level = speechLevel(buffer, n)
-                    post(id) { input.level = level }
-                    feed(buffer, n)
-                }
-                // 按了停：剩下的认完
-                mic.stop()
-                val tail = session.finish()
-                post(id) {
-                    if (tail.isNotBlank()) commit(tail) else commit(partial)
-                    end(id)
-                }
-            } finally {
-                session.release()
-            }
+            chunks.put(Chunk.End)
         } finally {
             mic.stop()
         }
+    }
+
+    private sealed interface Chunk {
+        class Audio(val samples: FloatArray) : Chunk
+        data object Broken : Chunk
+        data object End : Chunk
     }
 
     /** 回主线程做（这次听写已经收掉、又开了新的一次就不做） */
@@ -218,7 +215,7 @@ internal class LocalDictation(
         const val CHUNK_MS = 50
         const val CHUNK_SAMPLES = 16_000 * CHUNK_MS / 1000
 
-        /** 模型加载时最多攒这么多块（30 秒） */
+        /** 识别追不上时最多攒这么多块（30 秒） */
         const val MAX_PENDING_CHUNKS = 30_000 / CHUNK_MS
     }
 }
