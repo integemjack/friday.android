@@ -24,7 +24,8 @@ const val VOICE_WAVE_DESCRIPTION = "正在听写的音波"
 /**
  * 听写时输入框底行原来写模型的地方：跟着麦克风音量往左滚的音波——每 [WAVE_TICK_MS] 毫秒取一次音量，
  * 新的一根从右边进来，一排竖条跟着往左挪。起得快、落得慢（看着不一闪一闪）；安静时是一排矮点。
- * 音量来自识别服务的 onRmsChanged（[VoiceInput.level]）：不报音量的识别服务上就一直是矮点。
+ * 音量来自识别服务的 onRmsChanged（[VoiceInput.level]）；不报音量的识别服务（小米自带的）上由 [Dictation] 拿出字当动静
+ * （字一长跳一下）。底下一直垫一道低低的波纹（[idleRipple]），没声音时也看得出在听、在滚。
  */
 @Composable
 fun VoiceWave(level: () -> Float, modifier: Modifier = Modifier) {
@@ -41,7 +42,8 @@ fun VoiceWave(level: () -> Float, modifier: Modifier = Modifier) {
                 if (now - last >= WAVE_TICK_MS) {
                     last = now
                     shown = waveStep(shown, current())
-                    samples[count % WAVE_SAMPLES] = shown
+                    // 底下垫一道低低的波纹跟着往左走：识别服务不报音量、没出字时也看得出在听
+                    samples[count % WAVE_SAMPLES] = maxOf(shown, idleRipple(count))
                     count++
                 }
             }
@@ -74,6 +76,9 @@ internal fun waveStep(previous: Float, level: Float): Float {
     val target = level.coerceIn(0f, 1f)
     return if (target >= previous) target else previous * 0.65f + target * 0.35f
 }
+
+/** 在听但没声音时第 [index] 根的高度（0–1）：一道低低的、慢慢往左走的波纹 */
+internal fun idleRipple(index: Int): Float = 0.1f * (0.5f + 0.5f * kotlin.math.sin(index * 0.45f))
 
 /** 取一次音量的间隔（一根竖条往左挪一格的时间） */
 const val WAVE_TICK_MS = 60L

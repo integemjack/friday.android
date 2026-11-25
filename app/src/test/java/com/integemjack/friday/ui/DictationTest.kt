@@ -118,6 +118,43 @@ class DictationTest {
     }
 
     @Test
+    fun `小米把上一句的尾巴又认一遍：重的去掉，不重的照接`() {
+        start()
+        val shadow = recognizer()
+        shadow.triggerOnReadyForSpeech(Bundle())
+        shadow.triggerOnResults(words("今天星期几"))
+        nextSegment()
+        // 实测：下一段 1.4 秒后来了「星期几」
+        shadow.triggerOnPartialResults(words("星期几"))
+        assertEquals("原有的话，今天星期几", draft.input)
+        shadow.triggerOnResults(words("星期几"))
+        assertEquals("原有的话，今天星期几", draft.input)
+        nextSegment()
+        shadow.triggerOnPartialResults(words("星期几下午有雨"))
+        assertEquals("原有的话，今天星期几下午有雨", draft.input)
+        shadow.triggerOnResults(words("下午有雨吗"))
+        assertEquals("原有的话，今天星期几下午有雨吗", draft.input)
+    }
+
+    @Test
+    fun `识别服务不报音量（小米）：出字了音波跳一下再落；报音量的照音量`() {
+        start()
+        val shadow = recognizer()
+        shadow.triggerOnReadyForSpeech(Bundle())
+        shadow.triggerOnPartialResults(words("今天"))
+        assertTrue(voice.level >= 0.5f)
+        looper.idleFor(Duration.ofMillis(Dictation.PULSE_MS + 10))
+        assertEquals(0f, voice.level, 0f)
+        shadow.triggerOnPartialResults(words("今天天气不错"))
+        assertTrue(voice.level >= 0.8f)
+        // 报了音量以后只照音量，出字不再跳
+        shadow.triggerOnRmsChanged(-2f)
+        assertEquals(0f, voice.level, 0f)
+        shadow.triggerOnPartialResults(words("今天天气不错适合出门"))
+        assertEquals(0f, voice.level, 0f)
+    }
+
+    @Test
     fun `按了停最后那段一直不来：一会儿就不等了`() {
         start()
         recognizer().triggerOnReadyForSpeech(Bundle())
@@ -206,6 +243,12 @@ class DictationTest {
         assertEquals("abc 今天", dictatedText("abc", "今天"))
         assertEquals("你好，今天", dictatedText("你好，", "今天"))
         assertNull(dictationError(SpeechRecognizer.ERROR_NO_MATCH))
+        // 新的一段开头跟前面末尾重了（至少两个字）去掉；前面末尾的标点不算
+        assertEquals("", withoutOverlap("今天星期几", "星期几"))
+        assertEquals("下午有雨", withoutOverlap("今天星期几。", "星期几下午有雨"))
+        assertEquals("好", withoutOverlap("你好", "好"))
+        assertEquals("明天见", withoutOverlap("", "明天见"))
+        assertEquals("几点了", withoutOverlap("今天星期几", "几点了"))
     }
 
     @Test
@@ -214,5 +257,9 @@ class DictationTest {
         val falling = waveStep(0.8f, 0f)
         assertTrue(falling in 0.4f..0.6f)
         assertEquals(1f, waveStep(0f, 3f), 0f)
+        // 没声音时垫的波纹：低低的、有起伏
+        val ripple = (0 until 40).map { idleRipple(it) }
+        assertTrue(ripple.all { it in 0f..0.1f })
+        assertTrue(ripple.max() - ripple.min() > 0.05f)
     }
 }

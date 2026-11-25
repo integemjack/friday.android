@@ -95,6 +95,13 @@ internal class Dictation(
     private var busyRetries = 0
     private var running = false
 
+    /**
+     * 识别服务报过音量（onRmsChanged）。小米自带的语音识别不报（2026-11-25 M2002J9E 上实测音波一直是矮点）：
+     * 那就拿「出字了」当说话的动静，字一长音波跳一下、过一会儿落回去（[pulse]）
+     */
+    private var levelsReported = false
+    private val fade = Runnable { if (!levelsReported) input.level = 0f }
+
     private val connectTimeout = Runnable {
         if (running && !answered) {
             fail("语音识别没有回应：系统设置里选的语音识别服务可能用不了，或者它在等你同意它的条款")
@@ -126,6 +133,7 @@ internal class Dictation(
         partial = ""
         answered = false
         busyRetries = 0
+        levelsReported = false
         running = true
         wanted = true
         input.listening = true
@@ -176,15 +184,23 @@ internal class Dictation(
 
     private fun write() {
         val target = target ?: return
-        target.input = dictatedText(base, joinSpoken(committed, partial))
+        target.input = dictatedText(base, joinSpoken(committed, withoutOverlap(committed, partial)))
     }
 
     /** 正在说的这段算说完了（出错前听到一半的也留着） */
     private fun commitPartial() {
         if (partial.isBlank()) return
-        committed = joinSpoken(committed, partial)
+        committed = joinSpoken(committed, withoutOverlap(committed, partial))
         partial = ""
         write()
+    }
+
+    /** 识别服务不报音量时：出字了音波跳一下（字多跳得高），过一会儿落回去 */
+    private fun pulse(grown: Int) {
+        if (levelsReported || !wanted || grown <= 0) return
+        input.level = (0.45f + 0.1f * grown).coerceAtMost(1f)
+        main.removeCallbacks(fade)
+        main.postDelayed(fade, PULSE_MS)
     }
 
     private fun fail(message: String?) {
@@ -198,6 +214,7 @@ internal class Dictation(
         wanted = false
         main.removeCallbacks(connectTimeout)
         main.removeCallbacks(stopTimeout)
+        main.removeCallbacks(fade)
         input.listening = false
         input.level = 0f
         runCatching { recognizer?.destroy() }
@@ -221,6 +238,7 @@ internal class Dictation(
 
         override fun onRmsChanged(rmsdB: Float) {
             heard()
+            levelsReported = true
             // 大约 -2..10 dB → 0..1；停了以后来的不算（音波已经收了）
             if (wanted) input.level = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
         }
@@ -233,8 +251,10 @@ internal class Dictation(
             heard()
             val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             if (text.isNullOrBlank() || !running) return
+            val grown = text.length - partial.length
             partial = text
             write()
+            pulse(grown)
         }
 
         override fun onResults(results: Bundle?) {
@@ -243,7 +263,10 @@ internal class Dictation(
             busyRetries = 0
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             // 这段的最终结果替掉 partial；没给结果就留着听到的一半
-            if (!text.isNullOrBlank()) partial = text
+            if (!text.isNullOrBlank()) {
+                pulse(text.length - partial.length)
+                partial = text
+            }
             commitPartial()
             next()
         }
@@ -278,6 +301,9 @@ internal class Dictation(
         const val RESTART_DELAY_MS = 80L
         const val BUSY_RETRY_MS = 400L
         const val MAX_BUSY_RETRIES = 4
+
+        /** 不报音量的识别服务上，出字后音波跳起来这么久再落 */
+        const val PULSE_MS = 220L
     }
 }
 
@@ -294,6 +320,19 @@ internal fun joinSpoken(before: String, next: String): String {
     if (next.isEmpty()) return before
     val latin = { c: Char -> c.code < 0x80 && c.isLetterOrDigit() }
     return if (latin(before.last()) && latin(next.first())) "$before $next" else before + next
+}
+
+/**
+ * 新的一段开头跟前面已经写进去的末尾重了的去掉：小米自带的语音识别一段说完马上开下一段时，会把上一句的尾巴再认一遍
+ * （2026-11-25 实测「今天星期几」之后 1.4 秒又来一段「星期几」，框里成了「今天星期几星期几」）。
+ * 至少重两个字才算（一个字的重复多半是真的又说了一遍）；比的时候不看前面末尾的标点、空白
+ */
+internal fun withoutOverlap(before: String, next: String): String {
+    val tail = before.trimEnd { it.isWhitespace() || it in "，。！？、,.!?；;：:" }
+    for (length in minOf(tail.length, next.length) downTo 2) {
+        if (tail.endsWith(next.substring(0, length))) return next.substring(length)
+    }
+    return next
 }
 
 /** 识别出错时说的话（没听到话的不说） */
