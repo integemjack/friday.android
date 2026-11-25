@@ -695,6 +695,28 @@ private fun AssistantCard() {
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
+                Spacer(Modifier.height(10.dp))
+                // 2026-11-25 随身模式（同桌面版 设置 › 助手 › 聊天工具；ASSISTANT.md §16.3.3）：打给助手的电话一直开着当耳朵
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("随身模式", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (assistant.config.ambientCalls) {
+                                "打给助手的电话一直开着：旁边的人说的都记下，你的话它自己判断要不要回，不用喊「星期五」。要先登记声纹（给助手发 /voiceprint）"
+                            } else {
+                                "开了以后电话一直开着当它的耳朵，它自己判断你是不是在跟它说话"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = assistant.config.ambientCalls,
+                        onCheckedChange = { on ->
+                            patch("ambientCalls", kotlinx.serialization.json.JsonPrimitive(on))
+                        },
+                    )
+                }
                 if (state.assistantChannels.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
                     HairLine()

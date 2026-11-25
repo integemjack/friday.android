@@ -2154,6 +2154,26 @@ class UiRenderTest {
     }
 
     @Test
+    fun `设置里助手卡片有随身模式：关着说开了会怎样，开着说怎么用`() {
+        fun assistant(ambient: Boolean?) = com.integemjack.friday.proto.AssistantState.fromJson(buildJsonObject {
+            put("enabled", true)
+            put("config", buildJsonObject {
+                put("enabled", true)
+                ambient?.let { put("ambientCalls", it) }
+            })
+        })
+        // 旧主机不报这一项：当关着
+        val model = modelWith(FridayState(conn = connected, assistant = assistant(null)))
+        render(model) { SettingsScreen() }
+        compose.onNodeWithText("随身模式").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("开了以后电话一直开着当它的耳朵", substring = true).assertExists()
+        compose.runOnIdle { model.client.state.value = model.client.state.value.copy(assistant = assistant(true)) }
+        compose.waitForIdle()
+        compose.onNodeWithText("不用喊「星期五」", substring = true).assertExists()
+        compose.onNodeWithText("给助手发 /voiceprint", substring = true).assertExists()
+    }
+
+    @Test
     fun `后台连接关着：语音播报写明只在 App 开着时念`() {
         val model = modelWith(FridayState(conn = connected))
         model.settings.setKeepAlive(false)

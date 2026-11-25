@@ -848,6 +848,8 @@ data class AssistantConfig(
     val approveFromChannels: Boolean,
     val brainApproves: Boolean,
     val briefWriter: Boolean,
+    /** 随身模式（2026-11-25 起的主机）：电话一直开着当耳朵，它自己判断要不要回；旧主机没有这一项，当关着 */
+    val ambientCalls: Boolean = false,
     val raw: JsonObject?,
 ) {
     companion object {
@@ -865,6 +867,7 @@ data class AssistantConfig(
             approveFromChannels = o.bool("approveFromChannels") ?: false,
             brainApproves = o.bool("brainApproves") ?: false,
             briefWriter = o.bool("briefWriter") ?: false,
+            ambientCalls = o.bool("ambientCalls") ?: false,
             raw = o,
         )
     }
