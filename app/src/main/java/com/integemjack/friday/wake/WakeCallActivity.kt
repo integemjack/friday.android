@@ -29,8 +29,7 @@ class WakeCallActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setShowWhenLocked(true)
-        setTurnScreenOn(true)
+        showOverLockScreen()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // 通话页是深色的：铺到状态栏、导航条后面（不然状态栏那条是主题的浅色底），图标用浅色
         enableEdgeToEdge(
@@ -50,6 +49,23 @@ class WakeCallActivity : ComponentActivity() {
         // 通话一结束就关（挂断、对方挂了、没打通都是；没打通的原因叫醒那边会念出来）
         lifecycleScope.launch {
             model.call.state.collect { if (!it.inCall || it.phase == AssistantCall.Phase.Ended) finish() }
+        }
+    }
+
+    /**
+     * 锁屏上面显示、熄屏时点亮。setShowWhenLocked / setTurnScreenOn 是 Android 8.1（API 27）才有的，
+     * 8.0（minSdk 26）上调了直接 NoSuchMethodError 闪退：那里用窗口标志（清单里的 showWhenLocked /
+     * turnScreenOn 属性 8.0 也不认，同样靠这里）
+     */
+    private fun showOverLockScreen() {
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            )
         }
     }
 
