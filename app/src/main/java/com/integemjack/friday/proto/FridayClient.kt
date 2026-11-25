@@ -4,8 +4,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -137,6 +140,17 @@ class FridayClient(
 
     val state = MutableStateFlow(FridayState())
     val stateFlow: StateFlow<FridayState> get() = state
+
+    private val _assistantReplies = MutableSharedFlow<JournalEntry>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+
+    /**
+     * 助手刚说完的一条回复（[replyFinished]，从 assistant.entry 事件来）：语音播报念它。
+     * 订阅时一次拿到的、往上翻出来的、离线摆的快照都不算新的
+     */
+    val assistantReplies: SharedFlow<JournalEntry> = _assistantReplies.asSharedFlow()
 
     private var transport: WorkTransport? = null
     private var rpc: RpcClient? = null
@@ -384,7 +398,8 @@ class FridayClient(
 
     // MARK: 事件
 
-    private suspend fun handleEvent(method: String, params: JsonObject) {
+    /** 主机推来的一个事件（测试里直接喂） */
+    internal suspend fun handleEvent(method: String, params: JsonObject) {
         when (method) {
             "summaries" -> {
                 val list = (params["summaries"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
@@ -896,11 +911,13 @@ class FridayClient(
         val current = state.value
         val list = current.assistantEntries.toMutableList()
         val index = list.indexOfFirst { it.id == entry.id }
+        val previous = list.getOrNull(index)
         if (index >= 0) list[index] = entry else list.add(entry)
         state.value = current.copy(
             assistantEntries = list.sortedBy { it.at },
             assistantAwaiting = current.assistantAwaiting && !(index < 0 && answersAwaiting(entry)),
         )
+        if (replyFinished(previous, entry)) _assistantReplies.tryEmit(entry)
     }
 
     // MARK: 输入框底行：模型 / 任务模式 / 思考模式（REMOTE.md §6 runner.setEngine / setTeamMode / setThinking）

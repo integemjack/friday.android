@@ -123,4 +123,50 @@ class AssistantThinkingTest {
         assertTrue(entry("a1", "assistant", data = buildJsonObject { put("thinking", "  ") }).thinking == null)
         assertTrue(entry("t1", "tool", data = buildJsonObject { put("thinking", "嗯") }).thinking == null)
     }
+
+    // MARK: 刚说完的回复（语音播报念它）
+
+    private fun reply(
+        text: String = "好的，已经开了一段会话去查",
+        streaming: Boolean = false,
+        source: String? = "remote",
+        interrupted: Boolean = false,
+        data: JsonObject? = null,
+    ) = JournalEntry("a7", "2026-11-25T08:00:07Z", "assistant", source, text, emptyList(), interrupted, streaming, data)
+
+    @Test
+    fun `回复从在说变成说完、或者一次就是说完的：算刚说完`() {
+        assertTrue(replyFinished(reply(streaming = true), reply()))
+        assertTrue(replyFinished(null, reply()))
+        // 主动汇报（source notice）、聊天工具里说的也念
+        assertTrue(replyFinished(null, reply(source = "notice")))
+        assertTrue(replyFinished(null, reply(source = "schat:bot")))
+        assertTrue(replyFinished(null, reply(source = null)))
+    }
+
+    @Test
+    fun `还在说、已经说完的又改了一下、没字的都不算`() {
+        assertFalse(replyFinished(null, reply(streaming = true)))
+        assertFalse(replyFinished(reply(streaming = true), reply(streaming = true)))
+        // 答了它问的、标了项目：同一条又推一次
+        assertFalse(replyFinished(reply(), reply(data = buildJsonObject { put("answered", true) })))
+        assertFalse(replyFinished(reply(streaming = true), reply(text = "  ")))
+    }
+
+    @Test
+    fun `被打断、出错、不出声的、别人的条目都不算`() {
+        assertFalse(replyFinished(reply(streaming = true), reply(interrupted = true)))
+        assertFalse(replyFinished(reply(streaming = true), reply(text = "（出错了：超时）", data = buildJsonObject { put("error", "超时") })))
+        assertFalse(replyFinished(reply(streaming = true), reply(text = "（不说）", data = buildJsonObject { put("silent", true) })))
+        val user = JournalEntry("u1", "2026-11-25T08:00:01Z", "user", "remote", "在吗", emptyList(), false, false, null)
+        assertFalse(replyFinished(null, user))
+        val notice = JournalEntry("n1", "2026-11-25T08:00:02Z", "notice", null, "没接上大脑", emptyList(), false, false, null)
+        assertFalse(replyFinished(null, notice))
+    }
+
+    @Test
+    fun `桌面端语音模式那轮的回复主机已经念了，手机上不再念；通话里那轮的照念（挂了才说完的通话里没念）`() {
+        assertFalse(replyFinished(reply(streaming = true, source = "voice"), reply(source = "voice")))
+        assertTrue(replyFinished(reply(streaming = true, source = "call:schat"), reply(source = "call:schat")))
+    }
 }

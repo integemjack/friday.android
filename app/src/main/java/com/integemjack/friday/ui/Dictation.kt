@@ -73,8 +73,9 @@ fun rememberVoiceInput(draft: ComposerDraft): VoiceInput {
         }
         holder.recognizer?.destroy()
         holder.recognizer = recognizer
-        // 语音唤醒先把麦克风让出来（两边一起录，系统可能把听写那边静音）
+        // 语音唤醒先把麦克风让出来（两边一起录，系统可能把听写那边静音）；正在念的停下（别把念的听进去）
         model.wake.hold(WAKE_HOLD)
+        model.speaker.stop()
         recognizer.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}

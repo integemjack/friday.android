@@ -897,7 +897,10 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
         enabled = state.connected,
         canSend = !empty && !uploading,
         busy = uploading && !speaking,
-        onStop = if (speaking) ({ model.client.stopAssistant() }) else null,
+        onStop = if (speaking) ({
+            model.speaker.stop()
+            model.client.stopAssistant()
+        }) else null,
         stopDescription = "打断",
         runningSend = RunningSend.Send,
         voice = voice,
@@ -916,6 +919,8 @@ fun AssistantComposer(draft: ComposerDraft, onVideoCall: () -> Unit = {}) {
             }
             if (text.isNotEmpty() || paths.isNotEmpty()) {
                 draft.clear()
+                // 你说话了：正在念的它上一条回复别念了（同桌面端一开口就打断）
+                model.speaker.stop()
                 scope.launch {
                     runCatching { model.client.sayToAssistant(text, paths) }
                         .onFailure {

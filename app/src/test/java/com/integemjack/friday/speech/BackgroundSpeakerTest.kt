@@ -166,4 +166,66 @@ class BackgroundSpeakerTest {
         idle()
         assertEquals(listOf("A"), shadow(again).spokenTextList)
     }
+
+    // MARK: 助手的回复（排队念）
+
+    @Test
+    fun `回复排队念：不顶掉前一条、不按文字去重；引擎没起来时来的几条都念`() {
+        speaker.speak("第一条", queue = true)
+        speaker.speak("第二条", queue = true)
+        idle()
+        val tts = shadow(lastEngine())
+        tts.onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()
+        assertEquals(listOf("第一条", "第二条"), tts.spokenTextList)
+        assertEquals(TextToSpeech.QUEUE_ADD, tts.queueMode)
+
+        // 同一句话一分钟内又说了一遍（它真又说了）：照念
+        speaker.speak("第一条", queue = true)
+        idle()
+        assertEquals(listOf("第一条", "第二条", "第一条"), tts.spokenTextList)
+        // 念完了焦点还回去
+        assertSame(shadowOf(audio).lastAudioFocusRequest.audioFocusRequest, shadowOf(audio).lastAbandonedAudioFocusRequest)
+    }
+
+    @Test
+    fun `排着的回复后面来了待确认那句：顶掉，只念待确认的`() {
+        speaker.speak("回复", queue = true)
+        speaker.speak("Friday 等你确认")
+        idle()
+        val tts = shadow(lastEngine())
+        tts.onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()
+        assertEquals(listOf("Friday 等你确认"), tts.spokenTextList)
+    }
+
+    @Test
+    fun `回复也守静音和通话`() {
+        audio.ringerMode = AudioManager.RINGER_MODE_VIBRATE
+        speaker.speak("回复", queue = true)
+        idle()
+        val tts = shadow(lastEngine())
+        tts.onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()
+        assertTrue(tts.spokenTextList.isEmpty())
+
+        audio.ringerMode = AudioManager.RINGER_MODE_NORMAL
+        calling = true
+        speaker.speak("回复二", queue = true)
+        idle()
+        assertTrue(tts.spokenTextList.isEmpty())
+    }
+
+    @Test
+    fun `stop：引擎还没起来时排着的都不念了`() {
+        speaker.speak("第一条", queue = true)
+        speaker.speak("第二条", queue = true)
+        speaker.stop()
+        idle()
+        val tts = shadow(lastEngine())
+        tts.onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()
+        assertTrue(tts.spokenTextList.isEmpty())
+        assertEquals(BackgroundSpeaker.Engine.Ready, speaker.engine.value)
+    }
 }

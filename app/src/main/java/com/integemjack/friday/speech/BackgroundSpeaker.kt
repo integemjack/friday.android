@@ -18,8 +18,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 
 /**
- * 后台语音播报（设置 › 后台保持连接 › 语音播报，默认开）：App 在后台时有调用等你确认、Friday 在问你，
- * 除了弹通知，再用手机自己的文字转语音（TextToSpeech）念一句，不用拿起手机看。
+ * 语音播报（设置 › 后台保持连接 › 语音播报，默认开），用手机自己的文字转语音（TextToSpeech）念：
+ * - 停在助手页时它的新回复（说完一条念一条，连着几条排队念，[speak] 的 queue）；你开口 / 发话 / 点打断时 [stop]
+ * - App 在后台时有调用等你确认、Friday 在问你：除了弹通知，再念一句，不用拿起手机看
  *
  * - 进程得活着：靠后台保持连接的前台服务（ConnectionService）。Android 15（targetSdk 35）起后台申请音频焦点
  *   也要有前台服务，拿不到焦点就不念（打电话时也拿不到）
@@ -63,7 +64,8 @@ class BackgroundSpeaker(
     @Volatile
     var speaking = false
         private set
-    private var pending: Pair<String, Boolean>? = null
+    /** 引擎还没起来时攒着的（念完一句顶掉的那种只留最新一句，排队的都留着） */
+    private val pending = ArrayDeque<Line>()
     private var focus: AudioFocusRequest? = null
     private var holdingFocus = false
     private var utterance = 0
@@ -75,14 +77,32 @@ class BackgroundSpeaker(
         if (t.isSpeaking) scheduleRelease() else shutdown()
     }
 
+    private class Line(val text: String, val force: Boolean, val queue: Boolean)
+
     /**
      * 念一句（排在主线程上，马上返回）。[force]：设置页「试听」——不管静音 / 勿扰、不去重；
-     * 拿不到音频焦点（在打电话）照样不念。[delayMs]：过这么久再念（刚弹的通知有提示音时等它响完）
+     * 拿不到音频焦点（在打电话）照样不念。[delayMs]：过这么久再念（刚弹的通知有提示音时等它响完）。
+     * [queue]：排在正在念的后面（助手连着说的几条回复，一条不落；不按文字去重，调用方按条去重），
+     * 不排队的顶掉正在念的
      */
-    fun speak(text: String, force: Boolean = false, delayMs: Long = 0) {
+    fun speak(text: String, force: Boolean = false, delayMs: Long = 0, queue: Boolean = false) {
         val line = text.trim()
         if (line.isEmpty()) return
-        main.postDelayed({ enqueue(line, force) }, delayMs.coerceAtLeast(0))
+        main.postDelayed({ enqueue(Line(line, force, queue)) }, delayMs.coerceAtLeast(0))
+    }
+
+    /** 别念了（你开口、发话、点了打断）：正在念的和排着的都不要，焦点还回去 */
+    fun stop() {
+        main.post {
+            pending.clear()
+            if (!speaking) return@post
+            // 停下来的那句回调 onStop 时 id 已经对不上，不再动焦点：这里自己收
+            utterance++
+            runCatching { tts?.stop() }
+            speaking = false
+            abandonFocus()
+            scheduleRelease()
+        }
     }
 
     /** 现在为什么不该出声（null = 可以念） */
@@ -97,21 +117,25 @@ class BackgroundSpeaker(
         )
     }
 
-    private fun enqueue(text: String, force: Boolean) {
-        val now = SystemClock.elapsedRealtime()
-        if (!force && text == lastText && now - lastAt < REPEAT_WINDOW_MS) return
-        lastText = text
-        lastAt = now
+    private fun enqueue(line: Line) {
+        if (!line.queue) {
+            val now = SystemClock.elapsedRealtime()
+            if (!line.force && line.text == lastText && now - lastAt < REPEAT_WINDOW_MS) return
+            lastText = line.text
+            lastAt = now
+        }
         main.removeCallbacks(release)
         if (tts == null) {
             create()
             if (tts == null) return
         }
         if (!ready) {
-            pending = text to force // 引擎起来再念；这期间又来一句就只念新的
+            // 引擎起来再念；这期间又来一句不排队的就只念新的
+            if (!line.queue) pending.clear()
+            pending.addLast(line)
             return
         }
-        say(text, force)
+        say(line)
     }
 
     private fun create() {
@@ -122,7 +146,7 @@ class BackgroundSpeaker(
         }.getOrNull()
         if (created == null) {
             _engine.value = Engine.Unavailable
-            pending = null
+            pending.clear()
             return
         }
         created.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -141,39 +165,44 @@ class BackgroundSpeaker(
         if (ready) return
         if (status != TextToSpeech.SUCCESS) {
             _engine.value = Engine.Unavailable
-            pending = null
+            pending.clear()
             shutdown()
             return
         }
         val lang = runCatching { t.setLanguage(Locale.SIMPLIFIED_CHINESE) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
         if (lang == TextToSpeech.LANG_MISSING_DATA || lang == TextToSpeech.LANG_NOT_SUPPORTED) {
             _engine.value = Engine.NoChinese
-            pending = null
+            pending.clear()
             shutdown()
             return
         }
         runCatching { t.setAudioAttributes(attributes) }
         ready = true
         _engine.value = Engine.Ready
-        val next = pending
-        pending = null
-        if (next != null) say(next.first, next.second) else scheduleRelease()
+        if (pending.isEmpty()) {
+            scheduleRelease()
+            return
+        }
+        val lines = pending.toList()
+        pending.clear()
+        lines.forEach { say(it) }
     }
 
-    private fun say(text: String, force: Boolean) {
+    private fun say(line: Line) {
         val t = tts ?: return
-        if ((!force && quietReason() != null) || !requestFocus()) {
-            scheduleRelease()
+        if ((!line.force && quietReason() != null) || !requestFocus()) {
+            if (!speaking) scheduleRelease()
             return
         }
         val id = "friday-${++utterance}"
         speaking = true
-        val result = runCatching { t.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), id) }.getOrDefault(TextToSpeech.ERROR)
+        val mode = if (line.queue) TextToSpeech.QUEUE_ADD else TextToSpeech.QUEUE_FLUSH
+        val result = runCatching { t.speak(line.text, mode, Bundle(), id) }.getOrDefault(TextToSpeech.ERROR)
         // 念不出来（引擎进程被收掉了之类）：整个放掉，下一句重新起
         if (result != TextToSpeech.SUCCESS) shutdown()
     }
 
-    /** 念完 / 出错 / 被下一句顶掉：只认最新那句（被 QUEUE_FLUSH 顶掉的那句不放焦点） */
+    /** 念完 / 出错 / 被下一句顶掉：只认最新那句（被 QUEUE_FLUSH 顶掉的、排在后面还有的那句不放焦点） */
     private fun finished(utteranceId: String?) {
         main.post {
             if (utteranceId != "friday-$utterance") return@post
@@ -197,7 +226,8 @@ class BackgroundSpeaker(
             .also { focus = it }
         val granted = runCatching { audio.requestAudioFocus(request) }.getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED) ==
             AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        holdingFocus = granted
+        // 排队念时前一句还拿着焦点：这次没要到也别把它忘了（念完要还）
+        if (granted) holdingFocus = true
         return granted
     }
 
@@ -232,7 +262,7 @@ class BackgroundSpeaker(
         const val AFTER_CHIME_MS = 1_500L
 
         /** 设置页「试听」念的那句 */
-        const val SAMPLE = "这是 Friday 的后台语音播报：有调用等你确认的时候，我会这样念一句。"
+        const val SAMPLE = "这是 Friday 的语音播报：助手的新回复、有调用等你确认的时候，我会这样念出来。"
     }
 }
 
@@ -298,3 +328,33 @@ internal fun speakable(text: String, max: Int): String {
         .trim()
     return if (line.length <= max) line else line.take(max).trimEnd() + "…"
 }
+
+/** 助手一条回复最多念这么多字（它说的本来就短，长内容在「给看的」里；万一写长了别念几分钟） */
+internal const val REPLY_MAX = 400
+
+/**
+ * 助手回复念出来的样子：代码块不念，链接只念文字（光秃秃的网址说成「链接」），去掉 Markdown 记号和列表的序号；
+ * 一行一行接起来，行尾没标点的补个逗号停一下；太长截断
+ */
+internal fun replySpeech(text: String, max: Int = REPLY_MAX): String {
+    val plain = text
+        .replace(Regex("```[\\s\\S]*?(```|$)"), "\n")
+        .replace(Regex("!?\\[([^\\]]*)]\\([^)]*\\)"), "$1")
+        .replace(Regex("https?://\\S+"), "链接")
+    val lines = plain.lines()
+        // 列表记号：「- 」「1. 」「2) 」后面要有空格（「3.5 版」不是列表），中文的「3、」后面可以不空
+        .map { it.replace(Regex("^\\s*(?:(?:[-*+]|\\d+[.)])\\s+|\\d+、\\s*)"), "") }
+        // 加粗、删除线、行内代码的记号直接去掉（不留空格：「**测试**全过了」念成「测试全过了」）
+        .map { speakable(it.replace(Regex("[*~`]+"), ""), Int.MAX_VALUE) }
+        .filter { it.isNotEmpty() }
+    val joined = buildString {
+        lines.forEachIndexed { i, line ->
+            if (i > 0 && last() !in SPOKEN_PAUSES) append('，')
+            append(line)
+        }
+    }
+    return if (joined.length <= max) joined else joined.take(max).trimEnd('，', ' ') + "…"
+}
+
+/** 行尾已经有停顿的标点：接下一行时不再补逗号 */
+private const val SPOKEN_PAUSES = "。！？!?，,；;：:…、"

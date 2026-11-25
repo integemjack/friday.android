@@ -23,7 +23,7 @@ class AppSettings(private val prefs: SharedPreferences) {
 
     private val _speakInBackground = MutableStateFlow(prefs.getBoolean(KEY_SPEAK_IN_BACKGROUND, true))
 
-    /** 后台语音播报（在后台时有调用等你确认，除了通知再念一句）；默认开 */
+    /** 语音播报（停在助手页时它的新回复直接念；在后台时有调用等你确认，除了通知再念一句）；默认开 */
     val speakInBackground: StateFlow<Boolean> = _speakInBackground.asStateFlow()
 
     fun setSpeakInBackground(on: Boolean) {

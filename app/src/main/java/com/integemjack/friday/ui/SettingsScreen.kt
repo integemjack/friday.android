@@ -236,8 +236,11 @@ private fun BackgroundCard() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(14.dp))
-            SpeakRow()
+        }
+        // 语音播报一直列着：停在助手页时念它的回复，App 开着就行，不靠后台连接
+        Spacer(Modifier.height(14.dp))
+        SpeakRow(keepAlive)
+        if (keepAlive) {
             Spacer(Modifier.height(14.dp))
             IslandRow()
             Spacer(Modifier.height(14.dp))
@@ -419,11 +422,12 @@ private fun IslandRow() {
 }
 
 /**
- * 后台语音播报（在「后台保持连接」开着时才有：进程活着才念得出来）。
+ * 语音播报：停在助手页时它的新回复直接念；在后台时有调用等你确认，除了通知再念一句。
+ * 在后台念要「后台保持连接」开着（进程活着、有前台服务才拿得到音频焦点），关着时写明只在 App 开着时念。
  * 「试听」不管静音 / 勿扰，顺便把引擎起一次：不会说中文、没有引擎就在这里写出来
  */
 @Composable
-private fun SpeakRow() {
+private fun SpeakRow(keepAlive: Boolean) {
     val context = LocalContext.current
     val model = LocalAppModel.current
     val speak by model.settings.speakInBackground.collectAsState()
@@ -447,10 +451,14 @@ private fun SpeakRow() {
         else -> null
     }
     Text(
-        problem ?: if (speak) {
-            "在后台时有调用等你确认、Friday 在问你，除了通知再念一句。静音或震动、开着勿扰、打电话时不念；音量跟媒体音量走。"
-        } else {
-            "关着：在后台只弹通知，不出声。"
+        problem ?: when {
+            !speak -> "关着：助手的回复不念，在后台只弹通知、不出声。"
+            keepAlive ->
+                "停在助手页时，它的新回复直接念出来；在后台时有调用等你确认、Friday 在问你，除了通知再念一句。" +
+                    "静音或震动、开着勿扰、打电话时不念；音量跟媒体音量走。"
+            else ->
+                "停在助手页时，它的新回复直接念出来。后台保持连接关着，切到后台就不念了。" +
+                    "静音或震动、开着勿扰、打电话时不念；音量跟媒体音量走。"
         },
         style = MaterialTheme.typography.bodySmall,
         color = if (problem != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,

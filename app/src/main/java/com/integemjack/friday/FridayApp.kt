@@ -131,7 +131,7 @@ class AppModel(private val app: Application) {
     /** 这台手机上的开关（后台保持连接、语音播报） */
     val settings = com.integemjack.friday.data.AppSettings(app)
 
-    /** 后台语音播报：在后台时有调用等你确认，跟通知一起念一句 */
+    /** 语音播报：停在助手页时它的新回复直接念；在后台时有调用等你确认，跟通知一起念一句 */
     val speaker = com.integemjack.friday.speech.BackgroundSpeaker(app, inAssistantCall = { call.state.value.inCall })
 
     /** 「待确认」通知：灵动岛（实时活动）+ 通知上直接答 */
@@ -302,6 +302,22 @@ class AppModel(private val app: Application) {
                     .map { com.integemjack.friday.speech.pendingApprovals(it.activities) }
                     .distinctUntilChanged()
                     .collect { attention.onPendingChanged(it) }
+            }
+        }
+        speakAssistantReplies()
+    }
+
+    /**
+     * 助手刚说完一条回复（停在助手页、订着它的日志时才收得到，App 在前台后台都算）：语音播报开着就直接念，
+     * 连着几条排队念。静音或震动、勿扰、打电话 / 跟助手通话时 speaker 自己不念
+     */
+    internal fun speakAssistantReplies() {
+        // 当场订上（UNDISPATCHED）：返回时已经在收，之后推来的一条也不漏
+        scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            client.assistantReplies.collect { entry ->
+                if (settings.speakInBackground.value) {
+                    speaker.speak(com.integemjack.friday.speech.replySpeech(entry.text), queue = true)
+                }
             }
         }
     }

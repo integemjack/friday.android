@@ -49,3 +49,16 @@ fun assistantThinkingPending(state: FridayState): Boolean {
         ?: entries.lastOrNull()?.takeIf { it.kind == "assistant" && it.streaming }
     return reply == null || reply.silent || (reply.text.isBlank() && reply.thinking == null && reply.error == null)
 }
+
+/**
+ * 这条推来的日志是不是助手刚说完的一条回复（语音播报念它）：新来的、或者刚从「在说」变成说完的回复，
+ * 有字、没出错、没被打断、不是不出声的。已经说完的那条又改了一下（答了它问的、标了项目）不算，免得再念一遍；
+ * 这轮是在桌面端语音模式（source `voice`）说的，主机那边已经念出来了，也不算。
+ * 通话里（`call:…`）那轮的照念：电话还通着时手机在通话音频模式，播报本来就不出声；
+ * 电话先挂了、回复后说完的（2026-11-25 手机上「每天 12 点清理系统」那条），通话里没念出来，正该在手机上念
+ */
+fun replyFinished(previous: JournalEntry?, entry: JournalEntry): Boolean =
+    entry.kind == "assistant" && !entry.streaming && !entry.silent && !entry.interrupted &&
+        entry.error == null && entry.text.isNotBlank() &&
+        (previous == null || previous.streaming) &&
+        entry.source != "voice"

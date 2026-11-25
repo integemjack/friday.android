@@ -2114,7 +2114,7 @@ class UiRenderTest {
     }
 
     @Test
-    fun `设置里后台连接开着才有语音播报：默认开、开关记下、引擎不会说中文时写出来`() {
+    fun `设置里语音播报默认开、开关记下、引擎不会说中文时写出来；后台连接关了照样列着`() {
         val model = modelWith(FridayState(conn = connected))
         render(model) { SettingsScreen() }
         compose.onNodeWithText("语音播报").performScrollTo().assertIsDisplayed()
@@ -2131,9 +2131,10 @@ class UiRenderTest {
         val toggle = toggles[row]
         toggle.performClick()
         assertEquals(false, model.settings.speakInBackground.value)
-        compose.onNodeWithText("关着：在后台只弹通知，不出声。").assertExists()
+        compose.onNodeWithText("关着：助手的回复不念，在后台只弹通知、不出声。").assertExists()
         toggle.performClick()
         assertTrue(model.settings.speakInBackground.value)
+        compose.onNodeWithText("停在助手页时，它的新回复直接念出来；在后台时", substring = true).assertExists()
 
         // 引擎起来了但不会说中文（假引擎没登记任何语言）
         model.speaker.speak("试一下")
@@ -2145,10 +2146,22 @@ class UiRenderTest {
         compose.onNodeWithText("这台手机的文字转语音引擎不会说中文", substring = true).assertExists()
         compose.onNodeWithText("打开文字转语音设置").assertExists()
 
-        // 后台连接关了：进程活不了，语音播报也就不列
+        // 后台连接关了：停在助手页时照样念它的回复，开关还在，写明切到后台就不念了
         compose.runOnIdle { model.settings.setKeepAlive(false) }
         compose.waitForIdle()
-        assertNoText("语音播报")
+        compose.onNodeWithText("语音播报").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("试听").assertExists()
+    }
+
+    @Test
+    fun `后台连接关着：语音播报写明只在 App 开着时念`() {
+        val model = modelWith(FridayState(conn = connected))
+        model.settings.setKeepAlive(false)
+        render(model) { SettingsScreen() }
+        compose.onNodeWithText("语音播报").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("后台保持连接关着，切到后台就不念了", substring = true).assertExists()
+        assertNoText("灵动岛")
+        assertNoText("语音唤醒")
     }
 
     @Test

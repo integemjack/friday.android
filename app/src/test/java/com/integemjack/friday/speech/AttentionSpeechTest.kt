@@ -7,6 +7,7 @@ import com.integemjack.friday.proto.PendingApproval
 import com.integemjack.friday.proto.SessionActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** 后台语音播报念什么、什么时候不念（纯函数，不用引擎） */
@@ -91,5 +92,34 @@ class AttentionSpeechTest {
         assertEquals("正在打电话", quietReasonFor(AudioManager.RINGER_MODE_NORMAL, all, AudioManager.MODE_IN_CALL, false))
         assertEquals("正在打电话", quietReasonFor(AudioManager.RINGER_MODE_NORMAL, all, AudioManager.MODE_RINGTONE, false))
         assertEquals("正在跟助手通话", quietReasonFor(AudioManager.RINGER_MODE_NORMAL, all, AudioManager.MODE_IN_COMMUNICATION, true))
+    }
+
+    // MARK: 助手的回复
+
+    @Test
+    fun `回复念出来：去掉 Markdown、列表序号，行尾没标点的补逗号`() {
+        assertEquals(
+            "查好了：测试全过了，构建产物在 out 目录，下一步要不要发版？",
+            replySpeech("查好了：\n\n- **测试**全过了\n- 构建产物在 `out` 目录\n\n下一步要不要发版？"),
+        )
+        assertEquals("第一步，第二步。第三步", replySpeech("1. 第一步\n2) 第二步。\n3、第三步"))
+        // 行首的小数不是列表
+        assertEquals("3.5 版已经发了", replySpeech("3.5 版已经发了"))
+    }
+
+    @Test
+    fun `代码块不念，链接念文字，光网址说成链接`() {
+        assertEquals("改好了，看 文档 或者 链接", replySpeech("改好了\n```kotlin\nval x = 1\n```\n看 [文档](https://a.b/c) 或者 https://x.y/z?q=1"))
+        // 没写完的代码块也不念
+        assertEquals("先这样", replySpeech("先这样\n```\nrm -rf build"))
+        assertEquals("", replySpeech("```\nonly code\n```"))
+    }
+
+    @Test
+    fun `回复太长截断`() {
+        val long = "好".repeat(REPLY_MAX + 50)
+        val said = replySpeech(long)
+        assertEquals(REPLY_MAX + 1, said.length)
+        assertTrue(said.endsWith("…"))
     }
 }
