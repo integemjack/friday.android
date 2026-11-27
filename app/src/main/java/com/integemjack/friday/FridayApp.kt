@@ -384,8 +384,9 @@ class AppModel(private val app: Application) {
             savedRefs = refs
         }
         val chat = state.chat
-        if (chat != null && chat !== savedChat && chat.runtime?.generating != true) {
-            // 在出字的不存（每一帧都在变）；停下来的那一刻会再触发一次
+        if (chat != null && chat !== savedChat && chat.runtime?.generating != true && !chat.loading) {
+            // 在出字的不存（每一帧都在变）；停下来的那一刻会再触发一次。
+            // 刚切过来、服务端的还没到的也不存（空页会把存好的盖掉）
             runCatching { stateCache.saveChat(account, botId, chat) }
             savedChat = chat
         }

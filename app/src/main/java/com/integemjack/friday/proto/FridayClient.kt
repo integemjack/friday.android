@@ -1,6 +1,7 @@
 package com.integemjack.friday.proto
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -9,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -53,6 +55,11 @@ data class ChatState(
     val runtime: Runtime? = null,
     /** 这段会话的工作目录（工具媒体里的相对路径按它拼） */
     val workingDirectory: String? = null,
+    /**
+     * 刚切过来、服务端的内容还没到：摆的是本地存的那份，或者只有标题的空页。
+     * 这时不能发、不存到本地（别拿空页盖掉存好的）
+     */
+    val loading: Boolean = false,
 ) {
     val tree: ConversationTree
         get() = conversationTree(order.mapNotNull { nodes[it] }, selectedChildren)
@@ -168,6 +175,11 @@ class FridayClient(
     }
 
     var cache: Cache? = null
+
+    /** 测试用：直接接上一个 RpcClient（不走信令 / WebRTC） */
+    internal fun attachRpcForTest(rpc: RpcClient) {
+        this.rpc = rpc
+    }
 
     /** state 里的数据是哪台机器的（换机器时先换成那台的快照，别把上一台的会话摆出来） */
     @Volatile
@@ -602,24 +614,65 @@ class FridayClient(
             state.value = state.value.copy(openConversationId = id, chat = cached)
             return
         }
-        val current = state.value.chat
-        if (current != null && current.id != id) rpc.notify("conversation.unsubscribe", buildJsonObject { put("id", current.id) })
-        val result = rpc.request("conversation.subscribe", buildJsonObject { put("id", id) })
-        val obj = result.jsonObject
-        val convo = (obj["conversation"] as? JsonObject)?.let { Conversation.fromJson(it) }
-            ?: throw Exception("订阅失败：没有会话数据")
-        val runtime = (obj["runtime"] as? JsonObject)?.let { Runtime.fromJson(it) }
-        var chat = ChatState(
-            id = convo.id,
-            title = convo.title,
-            nodes = convo.nodes.associateBy { it.id },
-            order = convo.nodes.map { it.id },
-            selectedChildren = convo.selectedChildren,
-            runtime = runtime,
-            workingDirectory = convo.workingDirectory ?: runtime?.workingDirectory,
-        )
-        chat = mergeVersions(chat, obj)
-        state.value = state.value.copy(openConversationId = id, chat = chat)
+        // 换到另一段：马上换过去，不等服务端回（以前等 conversation.subscribe 回来才换，
+        // 这段时间里一直摆着上一段，网慢时要等好一会）。先摆只有标题的空页，本地存过的读出来就换上
+        val previous = state.value.chat
+        val switching = previous?.id != id
+        if (switching) {
+            if (previous != null) rpc.notify("conversation.unsubscribe", buildJsonObject { put("id", previous.id) })
+            val title = state.value.summaries.firstOrNull { it.id == id }?.title.orEmpty()
+            state.update { it.copy(openConversationId = id, chat = ChatState(id = id, title = title, loading = true)) }
+            val cache = cache
+            val botId = dataBotId
+            if (cache != null) scope.launch(Dispatchers.IO) {
+                val cached = runCatching { cache.loadChat(botId, id) }.getOrNull() ?: return@launch
+                // 还开着这段、服务端的也还没到，才换上存的
+                state.update {
+                    val now = it.chat
+                    if (now != null && now.id == id && now.loading && now.nodes.isEmpty()) it.copy(chat = cached.copy(loading = true)) else it
+                }
+            }
+        }
+        val chat = try {
+            val obj = rpc.request("conversation.subscribe", buildJsonObject { put("id", id) }).jsonObject
+            val convo = (obj["conversation"] as? JsonObject)?.let { Conversation.fromJson(it) }
+                ?: throw Exception("订阅失败：没有会话数据")
+            val runtime = (obj["runtime"] as? JsonObject)?.let { Runtime.fromJson(it) }
+            mergeVersions(
+                ChatState(
+                    id = convo.id,
+                    title = convo.title,
+                    nodes = convo.nodes.associateBy { it.id },
+                    order = convo.nodes.map { it.id },
+                    selectedChildren = convo.selectedChildren,
+                    runtime = runtime,
+                    workingDirectory = convo.workingDirectory ?: runtime?.workingDirectory,
+                ),
+                obj,
+            )
+        } catch (e: Exception) {
+            // 已经换到别的了（或者离开了会话页）：这段打没打开都不用说
+            if (state.value.openConversationId != id) return
+            val now = state.value.chat
+            when {
+                // 摆着存下来的：留着看，只是不是最新的
+                now != null && now.id == id && now.nodes.isNotEmpty() -> state.update { it.copy(chat = now.copy(loading = false)) }
+                // 什么都没有：回到上一段（重新订上它）
+                switching && previous != null -> {
+                    state.update { it.copy(openConversationId = previous.id, chat = previous.copy(loading = true)) }
+                    scope.launch { runCatching { subscribeConversation(previous.id) } }
+                }
+                else -> state.update { it.copy(openConversationId = null, chat = null) }
+            }
+            throw e
+        }
+        // 回来的时候已经换到别的段了（连着点了好几段，前面的回得慢）：不摆它，退订
+        var stale = false
+        state.update {
+            stale = it.openConversationId != id
+            if (stale) it else it.copy(chat = chat)
+        }
+        if (stale) rpc.notify("conversation.unsubscribe", buildJsonObject { put("id", id) })
     }
 
     fun closeConversation() {

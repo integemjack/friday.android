@@ -178,10 +178,17 @@ private fun MainFrame(tabRequest: MutableStateFlow<Int?>, onSwitchBot: () -> Uni
         }
         // 已经开着的就是这段：不用再订一遍
         if (tab == HomeTabs.CHAT && model.client.state.value.chat?.id == id) return
+        // 马上切到会话页：subscribeConversation 一进去就把这段摆上（存下来的 / 只有标题的空页），不等服务端回
+        val from = tab
+        tab = HomeTabs.CHAT
         scope.launch {
             runCatching { model.client.subscribeConversation(id) }
-                .onSuccess { tab = HomeTabs.CHAT }
-                .onFailure { openError = "那段会话打不开" to (it.message ?: "") }
+                .onFailure {
+                    // （已经换到别的段了的话 subscribeConversation 不报错，到不了这儿）
+                    // 什么都没摆出来（没存过、也没有上一段可回）：回到点之前那一页
+                    if (model.client.state.value.chat == null && tab == HomeTabs.CHAT) tab = from
+                    openError = "那段会话打不开" to (it.message ?: "")
+                }
         }
     }
     fun newConversation() {

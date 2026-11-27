@@ -179,6 +179,26 @@ fun ChatScreen() {
             }
             return@Scaffold
         }
+        if (chat.loading && messages.isEmpty()) {
+            // 刚切过来、本地没存过这段：标题先换上，内容转圈等服务端的（不再摆着上一段）
+            Box(
+                Modifier.fillMaxSize().padding(padding).padding(bottom = LocalDockPadding.current),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                    Text(
+                        "正在打开这段会话…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            return@Scaffold
+        }
         Box(Modifier.fillMaxSize().padding(padding)) {
             // 消息一直铺到屏幕底（输入框背后透明），底下让出输入框那段；顶上渐隐。
             // 消息不够一屏时从顶上排下来
@@ -316,12 +336,14 @@ fun ChatComposer(drafts: ChatDrafts) {
         placeholder = when {
             chat == null -> "先在侧栏里选一段会话"
             !state.connected -> "离线：连上远程机器以后才能发（打的字会留着）"
+            chat.loading -> "正在打开这段会话…"
             uploading -> "附件上传中…"
             generating -> "补充给智能体：做完当前这一步就交给它"
             else -> "发消息…"
         },
         // 离线看的是存下来的内容：不能发、不能改设置；打了一半的字还在
-        enabled = chat != null && state.connected,
+        // 刚切过来、服务端的还没到：也先不能发（还没订上这段）
+        enabled = chat != null && state.connected && !chat.loading,
         canSend = !empty && !uploading,
         busy = uploading && !generating,
         onStop = if (generating) ({ model.client.stop() }) else null,
