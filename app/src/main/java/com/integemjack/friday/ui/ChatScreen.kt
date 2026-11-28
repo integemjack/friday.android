@@ -71,6 +71,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -129,12 +130,24 @@ fun ChatScreen() {
     // 消息流从上往下排（最新的在最下面）：点开思考 / 操作时上面的不动、下面的往下推，收起时往上收。
     // （以前倒着排贴底，点开一行会把它和上面的都往上顶，只能事后滚回来，一跳一跳的）
     // 每段会话一份滚动位置，一打开就停在最底下：最后一项、偏移给到很大，列表自己收到「最后一条的底贴着底」
+    val hasOlder = chat?.hasOlder == true
     val listState = rememberSaveable(chat?.id, saver = LazyListState.Saver) {
-        LazyListState((messages.size + (if (showDots) 1 else 0) - 1).coerceAtLeast(0), LIST_END_OFFSET)
+        LazyListState((messages.size + (if (showDots) 1 else 0) + (if (hasOlder) 1 else 0) - 1).coerceAtLeast(0), LIST_END_OFFSET)
     }
     // 贴底跟随：在最底下时来了新的、最后一条流式变长就跟到底；往上翻了、或者点开了什么，就不跟（FollowBottom.kt）
     val follow = rememberFollowBottom(listState, chat?.id)
     val atBottom by remember(listState) { derivedStateOf { !listState.canScrollForward } }
+    // 分批加载：翻到顶（最上面两项露出来）再要一批更早的，插在上面、列表按 key 留在原处。
+    // 不满一屏时一进来就在顶上：接着要，直到占满一屏或者没有更早的（条数变了会再看一次）
+    LaunchedEffect(listState, chat?.id) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val first = info.visibleItemsInfo.firstOrNull()
+            (first != null && first.index <= 1) to info.totalItemsCount
+        }.distinctUntilChanged().collect { (atTop, _) ->
+            if (atTop) runCatching { model.client.loadOlderMessages() }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -215,6 +228,14 @@ fun ChatScreen() {
                 ),
                 verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Top),
             ) {
+                // 上面还有更早的：翻到这儿自动要；要不到（断了一下）点一下再要
+                if (hasOlder) {
+                    item(key = OLDER_KEY) {
+                        OlderMessagesRow(loading = chat.loadingOlder) {
+                            scope.launch { runCatching { model.client.loadOlderMessages() } }
+                        }
+                    }
+                }
                 items(messages, key = { it.id }) { message ->
                     Box {
                         MessageItem(
@@ -252,6 +273,28 @@ fun ChatScreen() {
 
 /** 消息流里「思考中…」那一项的 key（消息 id 是服务端给的，不会撞上这个） */
 private const val GENERATING_KEY = "friday.ui:generating"
+
+/** 消息流最上面「更早的消息」那一项的 key */
+private const val OLDER_KEY = "friday.ui:older"
+
+/** 分批加载时消息流最上面一行：在要就转圈，没在要是一个「加载更早的消息」按钮 */
+@Composable
+private fun OlderMessagesRow(loading: Boolean, onLoad: () -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
+        if (loading) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                Text(
+                    "正在加载更早的消息…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            TextButton(onClick = onLoad) { Text("加载更早的消息") }
+        }
+    }
+}
 
 // MARK: 输入框
 

@@ -60,6 +60,13 @@ data class ChatState(
      * 这时不能发、不存到本地（别拿空页盖掉存好的）
      */
     val loading: Boolean = false,
+    /**
+     * 分批加载（服务端有 conversationPaging）：上面还有没拿的（往上翻到顶再要，[FridayClient.loadOlderMessages]）。
+     * 手里只有当前路径最后几十条往下的子树，最上面那条的父消息不在手里、当根
+     */
+    val hasOlder: Boolean = false,
+    /** 正在往上要更早的 */
+    val loadingOlder: Boolean = false,
 ) {
     val tree: ConversationTree
         get() = conversationTree(order.mapNotNull { nodes[it] }, selectedChildren)
@@ -148,6 +155,11 @@ class FridayClient(
     val state = MutableStateFlow(FridayState())
     val stateFlow: StateFlow<FridayState> get() = state
 
+    companion object {
+        /** 分批加载一次要多少条当前路径（先拿最后这么多，往上翻一次再拿这么多） */
+        const val PAGE = 50
+    }
+
     private val _assistantReplies = MutableSharedFlow<JournalEntry>(
         extraBufferCapacity = 16,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
@@ -176,9 +188,10 @@ class FridayClient(
 
     var cache: Cache? = null
 
-    /** 测试用：直接接上一个 RpcClient（不走信令 / WebRTC） */
+    /** 测试用：直接接上一个 RpcClient（不走信令 / WebRTC），连同收事件 */
     internal fun attachRpcForTest(rpc: RpcClient) {
         this.rpc = rpc
+        startEventLoop(rpc)
     }
 
     /** state 里的数据是哪台机器的（换机器时先换成那台的快照，别把上一台的会话摆出来） */
@@ -507,6 +520,8 @@ class FridayClient(
                     selectedChildren = convo.selectedChildren,
                     runtime = current.runtime,
                     workingDirectory = convo.workingDirectory ?: current.workingDirectory,
+                    // 分批订着、那边切了更早的分支：服务端重定窗口整个重发，带 hasOlder
+                    hasOlder = params.bool("hasOlder") ?: false,
                 ), params
             ))
         } else {
@@ -633,8 +648,14 @@ class FridayClient(
                 }
             }
         }
+        // 分批加载：先只要当前路径最后 PAGE 条（重新订同一段时，已经翻上去的也要回来）
+        val paged = state.value.hasFeature("conversationPaging")
+        val limit = if (paged) maxOf(PAGE, previous?.takeIf { !switching }?.messages?.size ?: 0) else 0
         val chat = try {
-            val obj = rpc.request("conversation.subscribe", buildJsonObject { put("id", id) }).jsonObject
+            val obj = rpc.request("conversation.subscribe", buildJsonObject {
+                put("id", id)
+                if (limit > 0) put("limit", limit)
+            }).jsonObject
             val convo = (obj["conversation"] as? JsonObject)?.let { Conversation.fromJson(it) }
                 ?: throw Exception("订阅失败：没有会话数据")
             val runtime = (obj["runtime"] as? JsonObject)?.let { Runtime.fromJson(it) }
@@ -647,6 +668,7 @@ class FridayClient(
                     selectedChildren = convo.selectedChildren,
                     runtime = runtime,
                     workingDirectory = convo.workingDirectory ?: runtime?.workingDirectory,
+                    hasOlder = obj.bool("hasOlder") ?: false,
                 ),
                 obj,
             )
@@ -673,6 +695,41 @@ class FridayClient(
             if (stale) it else it.copy(chat = chat)
         }
         if (stale) rpc.notify("conversation.unsubscribe", buildJsonObject { put("id", id) })
+    }
+
+    /**
+     * 分批加载：往上再要 [PAGE] 条（conversation.history），插到最前面。
+     * 窗口在服务端那边变了（NotFound）不管：服务端随后整个重发
+     */
+    suspend fun loadOlderMessages() {
+        val rpc = rpc ?: return
+        val chat = state.value.chat ?: return
+        if (!chat.hasOlder || chat.loadingOlder || chat.loading) return
+        val id = chat.id
+        updateChat(id) { it.copy(loadingOlder = true) }
+        try {
+            val obj = rpc.request("conversation.history", buildJsonObject {
+                put("id", id)
+                put("limit", PAGE)
+            }).jsonObject
+            val older = (obj["nodes"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(ChatMessage::fromJson) }.orEmpty()
+            val nodeIds = obj.strList("nodeIDs")
+            updateChat(id) {
+                val nodes = it.nodes + older.associateBy { m -> m.id }
+                mergeVersions(
+                    it.copy(
+                        nodes = nodes,
+                        order = nodeIds.ifEmpty { older.map { m -> m.id } + it.order.filterNot { o -> older.any { m -> m.id == o } } },
+                        hasOlder = obj.bool("hasOlder") ?: false,
+                        loadingOlder = false,
+                    ),
+                    obj,
+                )
+            }
+        } catch (e: Exception) {
+            updateChat(id) { it.copy(loadingOlder = false) }
+            if (!(e is RpcException && e.code == RpcErrors.NotFound)) throw e
+        }
     }
 
     fun closeConversation() {
